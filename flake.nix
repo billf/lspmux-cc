@@ -15,21 +15,13 @@
         let
           craneLib = crane.mkLib pkgs;
 
-          mcpServerSrc = lib.cleanSourceWith {
-            src = ./.;
-            filter = path: type:
-              (lib.hasInfix "/mcp-server/" path)
-              || (craneLib.filterCargoSources path type);
-          };
+          mcpServerSrc = craneLib.cleanCargoSource ./mcp-server;
 
           commonArgs = {
             src = mcpServerSrc;
-            pname = "lspmux-cc-mcp";
             strictDeps = true;
 
             buildInputs = lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.Security
-              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
               pkgs.libiconv
             ];
           };
