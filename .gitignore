@@ -1,0 +1,5 @@
+/mcp-server/target/
+/result
+*.swp
+*.swo
+.direnv/
