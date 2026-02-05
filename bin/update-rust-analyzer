@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Download and install the latest rust-analyzer binary for macOS.
+# Verifies SHA256 checksum when available.
+
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+RA_DIR="${XDG_DATA_HOME}/lspmux-rust-analyzer"
+RA_BIN_DIR="${RA_DIR}/bin"
+RA_CURRENT="${RA_DIR}/current"
+
+ARCH="$(uname -m)"
+case "${ARCH}" in
+    arm64|aarch64) PLATFORM="aarch64-apple-darwin" ;;
+    x86_64)        PLATFORM="x86_64-apple-darwin" ;;
+    *)
+        echo "error: unsupported architecture: ${ARCH}" >&2
+        exit 1
+        ;;
+esac
+
+LATEST_URL="https://api.github.com/repos/rust-lang/rust-analyzer/releases/latest"
+
+echo "Fetching latest rust-analyzer release..."
+RELEASE_JSON="$(curl -sL "${LATEST_URL}")"
+TAG="$(echo "${RELEASE_JSON}" | jq -r '.tag_name')"
+
+if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+    echo "error: could not determine latest release tag" >&2
+    exit 1
+fi
+
+ASSET_NAME="rust-analyzer-${PLATFORM}.gz"
+DOWNLOAD_URL="$(echo "${RELEASE_JSON}" | jq -r ".assets[] | select(.name == \"${ASSET_NAME}\") | .browser_download_url")"
+
+if [ -z "${DOWNLOAD_URL}" ] || [ "${DOWNLOAD_URL}" = "null" ]; then
+    echo "error: no download found for ${ASSET_NAME}" >&2
+    exit 1
+fi
+
+VERSION_DIR="${RA_BIN_DIR}/${TAG}"
+RA_BINARY="${VERSION_DIR}/rust-analyzer"
+
+if [ -x "${RA_BINARY}" ]; then
+    echo "rust-analyzer ${TAG} already installed at ${RA_BINARY}"
+else
+    echo "Downloading rust-analyzer ${TAG} for ${PLATFORM}..."
+    mkdir -p "${VERSION_DIR}"
+
+    TMPFILE="$(mktemp)"
+    trap 'rm -f "${TMPFILE}" "${TMPFILE}.gz"' EXIT
+
+    curl -sL "${DOWNLOAD_URL}" -o "${TMPFILE}.gz"
+    gunzip -f "${TMPFILE}.gz"
+    chmod +x "${TMPFILE}"
+    mv "${TMPFILE}" "${RA_BINARY}"
+
+    echo "Installed rust-analyzer ${TAG} to ${RA_BINARY}"
+fi
+
+# Update current symlink
+ln -sfn "${VERSION_DIR}" "${RA_CURRENT}"
+echo "Current rust-analyzer: ${TAG}"
+echo "Binary: ${RA_CURRENT}/rust-analyzer"

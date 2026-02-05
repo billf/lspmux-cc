@@ -1,0 +1,5 @@
+instance_timeout = 300
+gc_interval = 10
+listen = ["unix", "${SOCKET_PATH}"]
+connect = ["unix", "${SOCKET_PATH}"]
+pass_environment = ["CARGO_HOME", "RUSTUP_HOME", "PATH", "HOME", "USER"]

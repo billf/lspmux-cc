@@ -1,0 +1,12 @@
+{
+  "name": "lspmux-cc",
+  "version": "0.1.0",
+  "description": "LSP multiplexing for Claude Code - share rust-analyzer with Neovim",
+  "author": "bill",
+  "plugins": [
+    {
+      "name": "lspmux-rust-cc",
+      "path": "plugins/lspmux-rust-cc"
+    }
+  ]
+}

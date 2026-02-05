@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper to locate the rust-analyzer binary managed by update-rust-analyzer.
+
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+RA_CURRENT="${XDG_DATA_HOME}/lspmux-rust-analyzer/current/rust-analyzer"
+
+if [ ! -x "${RA_CURRENT}" ]; then
+    echo "error: rust-analyzer not found at ${RA_CURRENT}" >&2
+    echo "Run: update-rust-analyzer" >&2
+    exit 1
+fi
+
+exec "${RA_CURRENT}" "$@"

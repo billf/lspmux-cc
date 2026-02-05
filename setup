@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# lspmux-cc setup: install lspmux + rust-analyzer for shared LSP multiplexing.
+# macOS only.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+
+LSPMUX_CONFIG_DIR="${XDG_CONFIG_HOME}/lspmux"
+LSPMUX_LOG_DIR="${XDG_STATE_HOME}/lspmux/log"
+LSPMUX_SOCKET_DIR="${XDG_RUNTIME_DIR}/lspmux"
+LSPMUX_SOCKET="${LSPMUX_SOCKET_DIR}/lspmux.sock"
+RA_DATA_DIR="${XDG_DATA_HOME}/lspmux-rust-analyzer"
+
+LAUNCHD_DIR="${HOME}/Library/LaunchAgents"
+
+info() { echo "==> $*"; }
+warn() { echo "WARNING: $*" >&2; }
+die()  { echo "ERROR: $*" >&2; exit 1; }
+
+# --- Platform check ---
+[ "$(uname -s)" = "Darwin" ] || die "macOS only (for now)"
+
+# --- Dependency check ---
+for cmd in curl jq cargo; do
+    command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
+done
+
+# --- XDG directories ---
+info "Creating directories..."
+mkdir -p "${LSPMUX_CONFIG_DIR}" "${LSPMUX_LOG_DIR}" "${LSPMUX_SOCKET_DIR}" \
+         "${RA_DATA_DIR}/bin" "${LAUNCHD_DIR}"
+
+# --- Download rust-analyzer ---
+info "Updating rust-analyzer..."
+"${SCRIPT_DIR}/bin/update-rust-analyzer"
+
+RA_BINARY="${RA_DATA_DIR}/current/rust-analyzer"
+[ -x "${RA_BINARY}" ] || die "rust-analyzer not found after update"
+
+# --- Install lspmux ---
+if command -v lspmux >/dev/null 2>&1; then
+    info "lspmux already installed: $(command -v lspmux)"
+else
+    info "Installing lspmux via cargo..."
+    cargo install --locked lspmux
+fi
+
+LSPMUX_BIN="$(command -v lspmux)"
+[ -x "${LSPMUX_BIN}" ] || die "lspmux not found after install"
+
+# --- Write config ---
+info "Writing lspmux config to ${LSPMUX_CONFIG_DIR}/config.toml..."
+sed "s|\${SOCKET_PATH}|${LSPMUX_SOCKET}|g" \
+    "${SCRIPT_DIR}/config/lspmux.toml" > "${LSPMUX_CONFIG_DIR}/config.toml"
+
+# --- Deploy launchd agents ---
+deploy_plist() {
+    local src="$1" label="$2"
+    local dest="${LAUNCHD_DIR}/${label}.plist"
+
+    info "Deploying ${label}..."
+
+    # Bootout if currently loaded (ignore errors)
+    launchctl bootout "gui/$(id -u)/${label}" 2>/dev/null || true
+
+    # Template substitution
+    sed -e "s|\${LSPMUX_BIN}|${LSPMUX_BIN}|g" \
+        -e "s|\${CONFIG_PATH}|${LSPMUX_CONFIG_DIR}/config.toml|g" \
+        -e "s|\${LOG_DIR}|${LSPMUX_LOG_DIR}|g" \
+        -e "s|\${UPDATE_SCRIPT}|${SCRIPT_DIR}/bin/update-rust-analyzer|g" \
+        "${src}" > "${dest}"
+
+    launchctl bootstrap "gui/$(id -u)" "${dest}"
+}
+
+deploy_plist "${SCRIPT_DIR}/launchd/com.lspmux.server.plist" "com.lspmux.server"
+deploy_plist "${SCRIPT_DIR}/launchd/com.rust-analyzer.update.plist" "com.rust-analyzer.update"
+
+# --- Verify ---
+info "Waiting for lspmux to start..."
+sleep 2
+
+if lspmux status 2>/dev/null; then
+    info "lspmux is running."
+else
+    warn "lspmux status check failed. Check logs at ${LSPMUX_LOG_DIR}/"
+fi
+
+# --- Print plugin instructions ---
+echo ""
+echo "Setup complete!"
+echo ""
+echo "To use with Claude Code:"
+echo "  1. Install the plugin:"
+echo "     claude plugin add-marketplace ${SCRIPT_DIR}"
+echo "  2. Disable built-in rust-analyzer:"
+echo "     claude plugin disable rust-analyzer-lsp --scope user"
+echo "  3. Install the lspmux plugin:"
+echo "     claude plugin install lspmux-rust-cc --scope user"
+echo ""
+echo "Rust-analyzer binary: ${RA_BINARY}"
+echo "lspmux binary: ${LSPMUX_BIN}"
+echo "Config: ${LSPMUX_CONFIG_DIR}/config.toml"
+echo "Socket: ${LSPMUX_SOCKET}"
+echo "Logs: ${LSPMUX_LOG_DIR}/"

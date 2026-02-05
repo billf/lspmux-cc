@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper to locate the lspmux binary installed by cargo.
+
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+LSPMUX_BIN="${CARGO_HOME}/bin/lspmux"
+
+if [ ! -x "${LSPMUX_BIN}" ]; then
+    echo "error: lspmux not found at ${LSPMUX_BIN}" >&2
+    echo "Run: cargo install --locked lspmux" >&2
+    exit 1
+fi
+
+exec "${LSPMUX_BIN}" "$@"
