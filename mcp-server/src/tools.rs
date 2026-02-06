@@ -327,3 +327,49 @@ impl RustAnalyzerTools {
         self.tool_router.call(ctx).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_file_path_rejects_relative() {
+        let err = validate_file_path("relative/path.rs").unwrap_err();
+        assert!(err.message.contains("must be absolute"));
+    }
+
+    #[test]
+    fn validate_file_path_rejects_nonexistent() {
+        let err = validate_file_path("/nonexistent/path/to/file.rs").unwrap_err();
+        assert!(err.message.contains("file not found"));
+    }
+
+    #[test]
+    fn validate_file_path_accepts_existing_absolute() {
+        // Cargo.toml always exists relative to the manifest dir
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = format!("{manifest}/Cargo.toml");
+        assert!(validate_file_path(&path).is_ok());
+    }
+
+    #[test]
+    fn tool_error_sets_is_error_flag() {
+        let result = tool_error("something went wrong");
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.content.len(), 1);
+    }
+
+    #[test]
+    fn format_location_one_indexed() {
+        let loc = lsp_types::Location {
+            uri: crate::lsp_client::file_uri("/tmp/test.rs").unwrap(),
+            range: lsp_types::Range {
+                start: lsp_types::Position::new(0, 0),
+                end: lsp_types::Position::new(0, 5),
+            },
+        };
+        let formatted = format_location(&loc);
+        // Should be 1-indexed: line 1, col 1
+        assert_eq!(formatted, "/tmp/test.rs:1:1");
+    }
+}
