@@ -20,6 +20,11 @@ use serde::Deserialize;
 
 use crate::lsp_client::{file_uri, uri_to_path, LspClient};
 
+/// Create an error `CallToolResult` from a message string.
+fn tool_error(msg: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![Content::text(msg.into())])
+}
+
 /// Validate that a file path is absolute and exists on disk.
 ///
 /// Returns an `McpError::invalid_params` if the path is relative or does not exist.
@@ -97,9 +102,7 @@ impl RustAnalyzerTools {
 
         // Ensure the file is open in rust-analyzer before requesting diagnostics.
         if let Err(e) = self.lsp.ensure_file_open(file).await {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Failed to open file: {e}"
-            ))]));
+            return Ok(tool_error(format!("Failed to open file: {e}")));
         }
 
         let uri = file_uri(file)
@@ -158,10 +161,10 @@ impl RustAnalyzerTools {
 
                 Ok(CallToolResult::success(vec![Content::text(text)]))
             }
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Err(e) => Ok(tool_error(format!(
                 "Diagnostics request failed: {e}\n\n\
                  Note: rust-analyzer may still be loading. Try again in a few seconds."
-            ))])),
+            ))),
         }
     }
 
@@ -175,9 +178,7 @@ impl RustAnalyzerTools {
         validate_file_path(&p.file_path)?;
 
         if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Failed to open file: {e}"
-            ))]));
+            return Ok(tool_error(format!("Failed to open file: {e}")));
         }
 
         match self.lsp.hover(&p.file_path, p.line, p.character).await {
@@ -204,9 +205,7 @@ impl RustAnalyzerTools {
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No hover information available at this position.",
             )])),
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Hover request failed: {e}"
-            ))])),
+            Err(e) => Ok(tool_error(format!("Hover request failed: {e}"))),
         }
     }
 
@@ -223,9 +222,7 @@ impl RustAnalyzerTools {
         validate_file_path(&p.file_path)?;
 
         if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Failed to open file: {e}"
-            ))]));
+            return Ok(tool_error(format!("Failed to open file: {e}")));
         }
 
         match self
@@ -262,9 +259,7 @@ impl RustAnalyzerTools {
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No definition found at this position.",
             )])),
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Go to definition failed: {e}"
-            ))])),
+            Err(e) => Ok(tool_error(format!("Go to definition failed: {e}"))),
         }
     }
 
@@ -281,9 +276,7 @@ impl RustAnalyzerTools {
         validate_file_path(&p.file_path)?;
 
         if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Failed to open file: {e}"
-            ))]));
+            return Ok(tool_error(format!("Failed to open file: {e}")));
         }
 
         match self
@@ -309,9 +302,7 @@ impl RustAnalyzerTools {
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No references found at this position.",
             )])),
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Find references failed: {e}"
-            ))])),
+            Err(e) => Ok(tool_error(format!("Find references failed: {e}"))),
         }
     }
 }
