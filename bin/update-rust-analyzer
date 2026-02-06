@@ -52,14 +52,27 @@ else
     curl --proto =https --fail --silent --show-error --max-redirs 5 -L "${DOWNLOAD_URL}" -o "${TMPFILE}.gz"
     gunzip -f "${TMPFILE}.gz"
 
-    # Basic validation: ensure we got a non-empty binary
+    # Validate the downloaded binary
     if [ ! -s "${TMPFILE}" ]; then
         echo "error: downloaded binary is empty" >&2
         exit 1
     fi
 
+    # Verify it is a Mach-O executable, not an error page or corrupt download
+    if ! file "${TMPFILE}" | grep -q "Mach-O"; then
+        echo "error: downloaded file is not a valid Mach-O binary" >&2
+        file "${TMPFILE}" >&2
+        exit 1
+    fi
+
     chmod +x "${TMPFILE}"
+
+    # Record SHA256 for audit trail
+    CHECKSUM="$(shasum -a 256 "${TMPFILE}" | cut -d' ' -f1)"
+    echo "SHA256: ${CHECKSUM}"
+
     mv "${TMPFILE}" "${RA_BINARY}"
+    echo "${CHECKSUM}  rust-analyzer" > "${VERSION_DIR}/SHA256SUM"
 
     echo "Installed rust-analyzer ${TAG} to ${RA_BINARY}"
 fi
