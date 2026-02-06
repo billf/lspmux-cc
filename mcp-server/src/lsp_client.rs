@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -43,6 +43,8 @@ pub struct LspClient {
     /// The content hash is used to skip redundant `didChange` notifications.
     opened_files: Mutex<HashMap<String, (i32, u64)>>,
     child: Arc<Mutex<Child>>,
+    /// Set to `false` when the reader task exits (child process died or stdout closed).
+    alive: Arc<AtomicBool>,
 }
 
 /// Create a `file://` URI from an absolute file path.
@@ -81,14 +83,18 @@ impl LspClient {
 
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let child_stdin = Arc::new(Mutex::new(stdin));
+        let alive = Arc::new(AtomicBool::new(true));
 
         // Spawn reader task
         let pending_clone = Arc::clone(&pending);
+        let alive_clone = Arc::clone(&alive);
         tokio::spawn(async move {
             let pending_for_cleanup = Arc::clone(&pending_clone);
             if let Err(e) = reader_loop(stdout, pending_clone).await {
                 tracing::error!("LSP reader loop error: {e}");
             }
+            // Signal that the child process is no longer responsive.
+            alive_clone.store(false, Ordering::Release);
             // Drain pending requests so callers get immediate errors
             // (dropping senders causes RecvError on the corresponding receivers).
             let mut map = pending_for_cleanup.lock().await;
@@ -106,6 +112,7 @@ impl LspClient {
             pending,
             opened_files: Mutex::new(HashMap::new()),
             child: Arc::new(Mutex::new(child)),
+            alive,
         };
 
         // Initialize handshake
@@ -191,7 +198,13 @@ impl LspClient {
     }
 
     /// Send a raw JSON-RPC message with `Content-Length` framing.
+    ///
+    /// Returns an error immediately if the child process is no longer alive.
     async fn send_message(&self, msg: &Value) -> Result<()> {
+        if !self.alive.load(Ordering::Acquire) {
+            bail!("LSP server is no longer running (child process exited)");
+        }
+
         let body = serde_json::to_string(msg)?;
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
 
@@ -398,9 +411,7 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: PendingMap) -
         let length = content_length.context("missing Content-Length header")?;
 
         if length > MAX_LSP_MESSAGE_SIZE {
-            bail!(
-                "LSP message size {length} exceeds maximum of {MAX_LSP_MESSAGE_SIZE}"
-            );
+            bail!("LSP message size {length} exceeds maximum of {MAX_LSP_MESSAGE_SIZE}");
         }
 
         // Read body
