@@ -6,6 +6,7 @@
 //! - `rust_goto_definition`: Find definition location
 //! - `rust_find_references`: Find all references
 
+use std::path::Path;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -18,6 +19,26 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::lsp_client::{file_uri, uri_to_path, LspClient};
+
+/// Validate that a file path is absolute and exists on disk.
+///
+/// Returns an `McpError::invalid_params` if the path is relative or does not exist.
+fn validate_file_path(path: &str) -> Result<(), McpError> {
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        return Err(McpError::invalid_params(
+            format!("file_path must be absolute, got: {path}"),
+            None,
+        ));
+    }
+    if !p.exists() {
+        return Err(McpError::invalid_params(
+            format!("file not found: {path}"),
+            None,
+        ));
+    }
+    Ok(())
+}
 
 /// Tool parameter: a file path.
 #[derive(Deserialize, JsonSchema)]
@@ -72,6 +93,7 @@ impl RustAnalyzerTools {
     )]
     async fn diagnostics(&self, params: Parameters<FileParam>) -> Result<CallToolResult, McpError> {
         let file = &params.0.file_path;
+        validate_file_path(file)?;
 
         // Ensure the file is open in rust-analyzer before requesting diagnostics.
         if let Err(e) = self.lsp.ensure_file_open(file).await {
@@ -150,6 +172,7 @@ impl RustAnalyzerTools {
     )]
     async fn hover(&self, params: Parameters<PositionParam>) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+        validate_file_path(&p.file_path)?;
 
         if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -197,6 +220,7 @@ impl RustAnalyzerTools {
         params: Parameters<PositionParam>,
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+        validate_file_path(&p.file_path)?;
 
         if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -254,6 +278,7 @@ impl RustAnalyzerTools {
         params: Parameters<PositionParam>,
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+        validate_file_path(&p.file_path)?;
 
         if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
             return Ok(CallToolResult::success(vec![Content::text(format!(
