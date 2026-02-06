@@ -5,15 +5,21 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     crane.url = "github:ipetkov/crane";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, crane, ... }:
+  outputs = inputs@{ self, nixpkgs, flake-parts, crane, fenix, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ];
 
       perSystem = { config, self', pkgs, system, lib, ... }:
         let
           craneLib = crane.mkLib pkgs;
+
+          rust-analyzer-nightly = fenix.packages.${system}.rust-analyzer;
 
           mcpServerSrc = craneLib.cleanCargoSource ./mcp-server;
 
@@ -33,6 +39,7 @@
             lspmux-cc-mcp = craneLib.buildPackage (commonArgs // {
               inherit cargoArtifacts;
             });
+            inherit rust-analyzer-nightly;
             default = self'.packages.lspmux-cc-mcp;
           };
 
@@ -49,13 +56,14 @@
 
           devShells.default = pkgs.mkShell {
             inputsFrom = [ self'.packages.lspmux-cc-mcp ];
-            packages = with pkgs; [
+            packages = [
               # Rust
-              rustc cargo clippy rustfmt rust-analyzer
+              pkgs.rustc pkgs.cargo pkgs.clippy pkgs.rustfmt
+              rust-analyzer-nightly
               # Shell script deps
-              curl jq
+              pkgs.curl pkgs.jq
               # Dev tools
-              just shellcheck
+              pkgs.just pkgs.shellcheck
             ];
           };
         };
