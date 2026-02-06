@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # Download and install the latest rust-analyzer binary for macOS.
-# Verifies SHA256 checksum when available.
 
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 RA_DIR="${XDG_DATA_HOME}/lspmux-rust-analyzer"
@@ -22,7 +21,7 @@ esac
 LATEST_URL="https://api.github.com/repos/rust-lang/rust-analyzer/releases/latest"
 
 echo "Fetching latest rust-analyzer release..."
-RELEASE_JSON="$(curl -sL "${LATEST_URL}")"
+RELEASE_JSON="$(curl --proto =https --fail --silent --show-error --max-redirs 5 -L "${LATEST_URL}")"
 TAG="$(echo "${RELEASE_JSON}" | jq -r '.tag_name')"
 
 if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
@@ -50,8 +49,15 @@ else
     TMPFILE="$(mktemp)"
     trap 'rm -f "${TMPFILE}" "${TMPFILE}.gz"' EXIT
 
-    curl -sL "${DOWNLOAD_URL}" -o "${TMPFILE}.gz"
+    curl --proto =https --fail --silent --show-error --max-redirs 5 -L "${DOWNLOAD_URL}" -o "${TMPFILE}.gz"
     gunzip -f "${TMPFILE}.gz"
+
+    # Basic validation: ensure we got a non-empty binary
+    if [ ! -s "${TMPFILE}" ]; then
+        echo "error: downloaded binary is empty" >&2
+        exit 1
+    fi
+
     chmod +x "${TMPFILE}"
     mv "${TMPFILE}" "${RA_BINARY}"
 
