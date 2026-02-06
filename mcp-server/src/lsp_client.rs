@@ -5,6 +5,7 @@
 //! `initialize`/`initialized` handshake.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
@@ -34,8 +35,9 @@ pub struct LspClient {
     child_stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     next_id: AtomicI64,
     pending: PendingMap,
-    /// Tracks files we've sent `didOpen` for, with their current version number.
-    opened_files: Mutex<HashMap<String, i32>>,
+    /// Tracks files we've sent `didOpen` for: `(version, content_hash)`.
+    /// The content hash is used to skip redundant `didChange` notifications.
+    opened_files: Mutex<HashMap<String, (i32, u64)>>,
     child: Arc<Mutex<Child>>,
 }
 
@@ -260,6 +262,12 @@ impl LspClient {
             .await
             .with_context(|| format!("failed to read {file_path}"))?;
 
+        let content_hash = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            content.hash(&mut hasher);
+            hasher.finish()
+        };
+
         let language_id = if std::path::Path::new(file_path)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
@@ -270,9 +278,14 @@ impl LspClient {
         };
 
         let mut opened = self.opened_files.lock().await;
-        if let Some(version) = opened.get_mut(file_path) {
-            // Already open — send didChange with updated content.
+        if let Some((version, prev_hash)) = opened.get_mut(file_path) {
+            if *prev_hash == content_hash {
+                // File unchanged since last notification — skip didChange.
+                return Ok(());
+            }
+            // Content changed — send didChange with updated content.
             *version += 1;
+            *prev_hash = content_hash;
             let v = *version;
             drop(opened);
 
@@ -290,7 +303,7 @@ impl LspClient {
             .await
         } else {
             // First access — send didOpen.
-            opened.insert(file_path.to_string(), 0);
+            opened.insert(file_path.to_string(), (0, content_hash));
             drop(opened);
 
             self.notify(
