@@ -17,7 +17,7 @@ use rmcp::{tool, tool_router, ErrorData as McpError, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::lsp_client::{uri_to_path, LspClient};
+use crate::lsp_client::{file_uri, uri_to_path, LspClient};
 
 /// Tool parameter: a file path.
 #[derive(Deserialize, JsonSchema)]
@@ -73,8 +73,14 @@ impl RustAnalyzerTools {
     async fn diagnostics(&self, params: Parameters<FileParam>) -> Result<CallToolResult, McpError> {
         let file = &params.0.file_path;
 
-        let uri: lsp_types::Uri = format!("file://{file}")
-            .parse()
+        // Ensure the file is open in rust-analyzer before requesting diagnostics.
+        if let Err(e) = self.lsp.ensure_file_open(file).await {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Failed to open file: {e}"
+            ))]));
+        }
+
+        let uri = file_uri(file)
             .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
 
         let diag_params = lsp_types::DocumentDiagnosticParams {
@@ -144,6 +150,13 @@ impl RustAnalyzerTools {
     )]
     async fn hover(&self, params: Parameters<PositionParam>) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+
+        if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Failed to open file: {e}"
+            ))]));
+        }
+
         match self.lsp.hover(&p.file_path, p.line, p.character).await {
             Ok(Some(hover)) => {
                 let text = match hover.contents {
@@ -184,6 +197,13 @@ impl RustAnalyzerTools {
         params: Parameters<PositionParam>,
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+
+        if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Failed to open file: {e}"
+            ))]));
+        }
+
         match self
             .lsp
             .goto_definition(&p.file_path, p.line, p.character)
@@ -234,6 +254,13 @@ impl RustAnalyzerTools {
         params: Parameters<PositionParam>,
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+
+        if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Failed to open file: {e}"
+            ))]));
+        }
+
         match self
             .lsp
             .find_references(&p.file_path, p.line, p.character)

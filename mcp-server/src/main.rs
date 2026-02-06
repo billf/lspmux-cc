@@ -88,7 +88,11 @@ async fn main() -> Result<()> {
         format!("{xdg_data}/lspmux-rust-analyzer/current/rust-analyzer")
     });
 
-    let workspace_root = std::env::var("WORKSPACE_ROOT").ok();
+    let workspace_root = std::env::var("WORKSPACE_ROOT").ok().or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(String::from))
+    });
 
     tracing::info!("Starting lspmux-cc-mcp server");
     tracing::info!("lspmux binary: {lspmux_bin}");

@@ -11,27 +11,40 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use lsp_types::{
     request::{GotoDefinition, HoverRequest, References, Request},
-    ClientCapabilities, InitializeParams, InitializedParams, Uri,
+    ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
+    InitializedParams, TextDocumentContentChangeEvent, TextDocumentItem, Uri,
+    VersionedTextDocumentIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
+use tokio::time::{timeout, Duration};
 
 /// A pending request awaiting its response.
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>;
+
+/// Timeout for LSP requests. Rust-analyzer can be slow on large workspaces,
+/// but 30 seconds is generous enough for any single request.
+const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// LSP client that talks to lspmux/rust-analyzer via a child process.
 pub struct LspClient {
     child_stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     next_id: AtomicI64,
     pending: PendingMap,
+    /// Tracks files we've sent `didOpen` for, with their current version number.
+    opened_files: Mutex<HashMap<String, i32>>,
     _child: Arc<Mutex<Child>>,
 }
 
 /// Create a `file://` URI from an absolute file path.
-fn file_uri(path: &str) -> Result<Uri> {
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be parsed as a valid URI.
+pub fn file_uri(path: &str) -> Result<Uri> {
     let uri_str = format!("file://{path}");
     uri_str
         .parse()
@@ -66,8 +79,18 @@ impl LspClient {
         // Spawn reader task
         let pending_clone = Arc::clone(&pending);
         tokio::spawn(async move {
+            let pending_for_cleanup = Arc::clone(&pending_clone);
             if let Err(e) = reader_loop(stdout, pending_clone).await {
                 tracing::error!("LSP reader loop error: {e}");
+            }
+            // Drain pending requests so callers get immediate errors
+            // (dropping senders causes RecvError on the corresponding receivers).
+            let mut map = pending_for_cleanup.lock().await;
+            let count = map.len();
+            map.clear();
+            drop(map);
+            if count > 0 {
+                tracing::warn!("Reader loop exited with {count} pending request(s)");
             }
         });
 
@@ -75,11 +98,15 @@ impl LspClient {
             child_stdin,
             next_id: AtomicI64::new(1),
             pending,
+            opened_files: Mutex::new(HashMap::new()),
             _child: Arc::new(Mutex::new(child)),
         };
 
         // Initialize handshake
-        let root_uri = workspace_root.map(|p| file_uri(p).expect("valid workspace root URI"));
+        let root_uri = workspace_root
+            .map(file_uri)
+            .transpose()
+            .context("invalid workspace root URI")?;
 
         #[allow(deprecated)] // root_uri deprecated but still needed
         let init_params = InitializeParams {
@@ -122,7 +149,20 @@ impl LspClient {
 
         self.send_message(&msg).await?;
 
-        let response = rx.await.context("response channel closed")?;
+        let response = match timeout(LSP_REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                self.pending.lock().await.remove(&id);
+                bail!("LSP response channel closed (server may have crashed)");
+            }
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                bail!(
+                    "LSP request timed out after {}s",
+                    LSP_REQUEST_TIMEOUT.as_secs()
+                );
+            }
+        };
 
         // Check for error
         if let Some(error) = response.get("error") {
@@ -202,6 +242,70 @@ impl LspClient {
             },
         };
         self.request::<References>(params).await
+    }
+
+    /// Ensure a file is open in the LSP server with its current disk content.
+    ///
+    /// Sends `textDocument/didOpen` on first access, or `textDocument/didChange`
+    /// with updated content on subsequent accesses. This is required by the LSP
+    /// protocol before the server will provide diagnostics, hover, etc.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read from disk or the notification
+    /// fails to send.
+    pub async fn ensure_file_open(&self, file_path: &str) -> Result<()> {
+        let uri = file_uri(file_path)?;
+        let content = tokio::fs::read_to_string(file_path)
+            .await
+            .with_context(|| format!("failed to read {file_path}"))?;
+
+        let language_id = if std::path::Path::new(file_path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+        {
+            "rust"
+        } else {
+            "toml"
+        };
+
+        let mut opened = self.opened_files.lock().await;
+        if let Some(version) = opened.get_mut(file_path) {
+            // Already open — send didChange with updated content.
+            *version += 1;
+            let v = *version;
+            drop(opened);
+
+            self.notify(
+                "textDocument/didChange",
+                &DidChangeTextDocumentParams {
+                    text_document: VersionedTextDocumentIdentifier { uri, version: v },
+                    content_changes: vec![TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: content,
+                    }],
+                },
+            )
+            .await
+        } else {
+            // First access — send didOpen.
+            opened.insert(file_path.to_string(), 0);
+            drop(opened);
+
+            self.notify(
+                "textDocument/didOpen",
+                &DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri,
+                        language_id: language_id.to_string(),
+                        version: 0,
+                        text: content,
+                    },
+                },
+            )
+            .await
+        }
     }
 }
 
