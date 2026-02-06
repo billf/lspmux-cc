@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper to locate the lspmux-cc-mcp binary built by cargo.
+
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+MCP_BIN="${CARGO_HOME}/bin/lspmux-cc-mcp"
+
+# Try nix result first, then cargo install location
+if [ ! -x "${MCP_BIN}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+    NIX_RESULT="${SCRIPT_DIR}/result/bin/lspmux-cc-mcp"
+    if [ -x "${NIX_RESULT}" ]; then
+        MCP_BIN="${NIX_RESULT}"
+    fi
+fi
+
+if [ ! -x "${MCP_BIN}" ]; then
+    echo "error: lspmux-cc-mcp not found" >&2
+    echo "Build with: cargo install --path mcp-server" >&2
+    exit 1
+fi
+
+exec "${MCP_BIN}" "$@"

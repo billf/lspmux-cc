@@ -5,6 +5,17 @@ edition = "2021"
 description = "MCP server for lspmux rust-analyzer integration"
 license = "MIT"
 
+[dependencies]
+rmcp = { version = "0.14", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+lsp-types = "0.97"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [lints.clippy]
 nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }

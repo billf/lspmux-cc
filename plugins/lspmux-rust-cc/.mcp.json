@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "lspmux-rust-analyzer": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/lspmux-cc-mcp",
+      "env": {
+        "RUST_ANALYZER_PATH": "${CLAUDE_PLUGIN_ROOT}/bin/rust-analyzer"
+      }
+    }
+  }
+}
