@@ -103,7 +103,8 @@ async fn main() -> Result<()> {
         .await
         .context("failed to initialize LSP client")?;
 
-    let tools = RustAnalyzerTools::new(Arc::new(lsp));
+    let lsp = Arc::new(lsp);
+    let tools = RustAnalyzerTools::new(Arc::clone(&lsp));
     let server = LspmuxMcpServer { tools };
 
     // Start MCP server on stdio
@@ -115,6 +116,9 @@ async fn main() -> Result<()> {
 
     // Wait for the service to finish
     service.waiting().await?;
+
+    // Gracefully shut down LSP child process
+    lsp.shutdown().await;
 
     Ok(())
 }

@@ -36,7 +36,7 @@ pub struct LspClient {
     pending: PendingMap,
     /// Tracks files we've sent `didOpen` for, with their current version number.
     opened_files: Mutex<HashMap<String, i32>>,
-    _child: Arc<Mutex<Child>>,
+    child: Arc<Mutex<Child>>,
 }
 
 /// Create a `file://` URI from an absolute file path.
@@ -99,7 +99,7 @@ impl LspClient {
             next_id: AtomicI64::new(1),
             pending,
             opened_files: Mutex::new(HashMap::new()),
-            _child: Arc::new(Mutex::new(child)),
+            child: Arc::new(Mutex::new(child)),
         };
 
         // Initialize handshake
@@ -305,6 +305,39 @@ impl LspClient {
                 },
             )
             .await
+        }
+    }
+
+    /// Gracefully shut down the LSP server and child process.
+    ///
+    /// Sends the LSP `shutdown` request, then `exit` notification, and finally
+    /// kills the child process if it hasn't exited on its own.
+    pub async fn shutdown(&self) {
+        // Send LSP shutdown request (best-effort)
+        if let Err(e) = self.request::<lsp_types::request::Shutdown>(()).await {
+            tracing::warn!("LSP shutdown request failed: {e}");
+        }
+
+        // Send exit notification (best-effort)
+        if let Err(e) = self.notify("exit", &()).await {
+            tracing::warn!("LSP exit notification failed: {e}");
+        }
+
+        // Give the child a moment to exit, then kill it
+        let mut child = self.child.lock().await;
+        match timeout(Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(status)) => {
+                tracing::info!("LSP child exited with {status}");
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Error waiting for LSP child: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("LSP child did not exit in 5s, killing");
+                if let Err(e) = child.kill().await {
+                    tracing::error!("Failed to kill LSP child: {e}");
+                }
+            }
         }
     }
 }
