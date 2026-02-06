@@ -30,6 +30,10 @@ type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>;
 /// but 30 seconds is generous enough for any single request.
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum allowed LSP message body size (100 MB). Prevents OOM from a
+/// maliciously large `Content-Length` header.
+const MAX_LSP_MESSAGE_SIZE: usize = 100 * 1024 * 1024;
+
 /// LSP client that talks to lspmux/rust-analyzer via a child process.
 pub struct LspClient {
     child_stdin: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -392,6 +396,12 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: PendingMap) -
         }
 
         let length = content_length.context("missing Content-Length header")?;
+
+        if length > MAX_LSP_MESSAGE_SIZE {
+            bail!(
+                "LSP message size {length} exceeds maximum of {MAX_LSP_MESSAGE_SIZE}"
+            );
+        }
 
         // Read body
         let mut body = vec![0u8; length];
