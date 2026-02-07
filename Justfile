@@ -36,9 +36,13 @@ nix-build:
 setup:
     ./setup
 
+# Run integration tests (requires lspmux + rust-analyzer binaries)
+integration-test:
+    cargo test {{manifest}} -- --ignored
+
 # Lint all shell scripts
 shellcheck:
-    shellcheck setup bin/* plugins/**/hooks/scripts/*.sh
+    shellcheck setup bin/* plugins/**/hooks/scripts/*.sh plugins/**/bin/*
 
 # Pre-push: check + clippy + fmt + test
 pre-push: check clippy fmt-check test
