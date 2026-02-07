@@ -65,6 +65,40 @@ pub fn uri_to_path(uri: &Uri) -> String {
     s.strip_prefix("file://").unwrap_or(s).to_string()
 }
 
+/// Detect the LSP `languageId` from a file extension.
+///
+/// Falls back to `"plaintext"` for unrecognized extensions.
+fn detect_language_id(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext.to_ascii_lowercase().as_str() {
+        "rs" => "rust",
+        "toml" => "toml",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "md" | "markdown" => "markdown",
+        "py" => "python",
+        "js" => "javascript",
+        "ts" => "typescript",
+        "jsx" => "javascriptreact",
+        "tsx" => "typescriptreact",
+        "c" => "c",
+        "cpp" | "cc" | "cxx" => "cpp",
+        "h" | "hpp" => "cpp",
+        "go" => "go",
+        "rb" => "ruby",
+        "sh" | "bash" | "zsh" => "shellscript",
+        "css" => "css",
+        "html" | "htm" => "html",
+        "xml" => "xml",
+        "sql" => "sql",
+        "nix" => "nix",
+        _ => "plaintext",
+    }
+}
+
 impl LspClient {
     /// Spawn the lspmux client child process and perform the LSP handshake.
     pub async fn new(lspmux_bin: &str, ra_bin: &str, workspace_root: Option<&str>) -> Result<Self> {
@@ -285,14 +319,7 @@ impl LspClient {
             hasher.finish()
         };
 
-        let language_id = if std::path::Path::new(file_path)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
-        {
-            "rust"
-        } else {
-            "toml"
-        };
+        let language_id = detect_language_id(file_path);
 
         let mut opened = self.opened_files.lock().await;
         if let Some((version, prev_hash)) = opened.get_mut(file_path) {
@@ -450,6 +477,26 @@ mod tests {
     fn uri_to_path_round_trip() {
         let uri = file_uri("/tmp/test.rs").unwrap();
         assert_eq!(uri_to_path(&uri), "/tmp/test.rs");
+    }
+
+    #[test]
+    fn detect_language_id_common_extensions() {
+        assert_eq!(detect_language_id("/foo/bar.rs"), "rust");
+        assert_eq!(detect_language_id("/foo/Cargo.toml"), "toml");
+        assert_eq!(detect_language_id("/foo/bar.py"), "python");
+        assert_eq!(detect_language_id("/foo/bar.ts"), "typescript");
+        assert_eq!(detect_language_id("/foo/bar.tsx"), "typescriptreact");
+        assert_eq!(detect_language_id("/foo/bar.go"), "go");
+        assert_eq!(detect_language_id("/foo/bar.sh"), "shellscript");
+        assert_eq!(detect_language_id("/foo/bar.nix"), "nix");
+        assert_eq!(detect_language_id("/foo/bar.yml"), "yaml");
+        assert_eq!(detect_language_id("/foo/bar.yaml"), "yaml");
+        assert_eq!(detect_language_id("/foo/bar.json"), "json");
+        assert_eq!(detect_language_id("/foo/bar.md"), "markdown");
+        assert_eq!(detect_language_id("/foo/bar.html"), "html");
+        assert_eq!(detect_language_id("/foo/bar.sql"), "sql");
+        assert_eq!(detect_language_id("/foo/bar.unknown"), "plaintext");
+        assert_eq!(detect_language_id("/foo/noext"), "plaintext");
     }
 
     #[test]
