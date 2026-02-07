@@ -30,6 +30,11 @@ struct LspmuxMcpServer {
 impl ServerHandler for LspmuxMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
+            server_info: rmcp::model::Implementation {
+                name: env!("CARGO_PKG_NAME").into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                ..Default::default()
+            },
             instructions: Some(
                 "Provides rust-analyzer intelligence via lspmux. \
                  Use rust_diagnostics to check for errors, rust_hover for type info, \
