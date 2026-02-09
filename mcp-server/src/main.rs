@@ -5,12 +5,12 @@
 //! Claude Code <-MCP (stdio)-> lspmux-cc-mcp <-LSP (child stdio)-> lspmux client <-socket-> lspmux server -> rust-analyzer
 //! ```
 
-mod lsp_client;
 mod tools;
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use lspmux_cc_mcp::lsp_client::LspClient;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo, ToolsCapability,
 };
@@ -18,7 +18,6 @@ use rmcp::service::{RequestContext, ServiceExt};
 use rmcp::transport::io::stdio;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 
-use crate::lsp_client::LspClient;
 use crate::tools::RustAnalyzerTools;
 
 /// MCP server wrapping the rust-analyzer tools.

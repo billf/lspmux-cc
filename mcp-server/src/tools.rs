@@ -18,7 +18,7 @@ use rmcp::{tool, tool_router, ErrorData as McpError, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::lsp_client::{file_uri, uri_to_path, LspClient};
+use lspmux_cc_mcp::lsp_client::{file_uri, uri_to_path, LspClient};
 
 /// Create an error `CallToolResult` from a message string.
 fn tool_error(msg: impl Into<String>) -> CallToolResult {
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn format_location_one_indexed() {
         let loc = lsp_types::Location {
-            uri: crate::lsp_client::file_uri("/tmp/test.rs").unwrap(),
+            uri: lspmux_cc_mcp::lsp_client::file_uri("/tmp/test.rs").unwrap(),
             range: lsp_types::Range {
                 start: lsp_types::Position::new(0, 0),
                 end: lsp_types::Position::new(0, 5),
