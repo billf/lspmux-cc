@@ -12,9 +12,13 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    lspmux-src = {
+      url = "git+https://codeberg.org/p2502/lspmux?ref=main";
+      flake = false;
+    };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, crane, fenix, ... }:
+  outputs = inputs@{ self, nixpkgs, flake-parts, crane, fenix, lspmux-src, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ];
 
@@ -42,6 +46,13 @@
             lspmux-cc-mcp = craneLib.buildPackage (commonArgs // {
               inherit cargoArtifacts;
             });
+            lspmux = craneLib.buildPackage {
+              src = craneLib.cleanCargoSource lspmux-src;
+              strictDeps = true;
+              buildInputs = lib.optionals pkgs.stdenv.isDarwin [
+                pkgs.libiconv
+              ];
+            };
             inherit rust-analyzer-nightly;
             default = self'.packages.lspmux-cc-mcp;
           };
@@ -63,6 +74,7 @@
               # Rust
               pkgs.rustc pkgs.cargo pkgs.clippy pkgs.rustfmt
               rust-analyzer-nightly
+              self'.packages.lspmux
               # Shell script deps
               pkgs.curl pkgs.jq
               # Dev tools

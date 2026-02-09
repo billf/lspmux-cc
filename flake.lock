@@ -56,6 +56,23 @@
         "type": "github"
       }
     },
+    "lspmux-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1770122870,
+        "narHash": "sha256-pWYB4XjgxjFuW5FxLjg5e5u76ioRpbU/LB15QkPhxxA=",
+        "ref": "main",
+        "rev": "40ba72f27e513f405c6c3990e2ba52964bd40e97",
+        "revCount": 175,
+        "type": "git",
+        "url": "https://codeberg.org/p2502/lspmux"
+      },
+      "original": {
+        "ref": "main",
+        "type": "git",
+        "url": "https://codeberg.org/p2502/lspmux"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1770169770,
@@ -77,6 +94,7 @@
         "crane": "crane",
         "fenix": "fenix",
         "flake-parts": "flake-parts",
+        "lspmux-src": "lspmux-src",
         "nixpkgs": "nixpkgs"
       }
     },
