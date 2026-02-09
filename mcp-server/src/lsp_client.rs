@@ -85,8 +85,7 @@ fn detect_language_id(path: &str) -> &'static str {
         "jsx" => "javascriptreact",
         "tsx" => "typescriptreact",
         "c" => "c",
-        "cpp" | "cc" | "cxx" => "cpp",
-        "h" | "hpp" => "cpp",
+        "cpp" | "cc" | "cxx" | "h" | "hpp" => "cpp",
         "go" => "go",
         "rb" => "ruby",
         "sh" | "bash" | "zsh" => "shellscript",
@@ -101,16 +100,41 @@ fn detect_language_id(path: &str) -> &'static str {
 
 impl LspClient {
     /// Spawn the lspmux client child process and perform the LSP handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process cannot be spawned or the LSP
+    /// initialize handshake fails.
     pub async fn new(lspmux_bin: &str, ra_bin: &str, workspace_root: Option<&str>) -> Result<Self> {
-        let mut child = Command::new(lspmux_bin)
-            .arg("client")
+        Self::new_with_env(lspmux_bin, ra_bin, workspace_root, &[]).await
+    }
+
+    /// Spawn the lspmux client with extra environment variables set on the child process.
+    ///
+    /// This is useful for integration tests that need an isolated lspmux instance
+    /// (e.g. setting `HOME` to redirect the config file location).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process cannot be spawned or the LSP
+    /// initialize handshake fails.
+    pub async fn new_with_env(
+        lspmux_bin: &str,
+        ra_bin: &str,
+        workspace_root: Option<&str>,
+        env: &[(&str, &str)],
+    ) -> Result<Self> {
+        let mut cmd = Command::new(lspmux_bin);
+        cmd.arg("client")
             .arg("--server-path")
             .arg(ra_bin)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .context("failed to spawn lspmux client")?;
+            .stderr(std::process::Stdio::piped());
+        for &(key, val) in env {
+            cmd.env(key, val);
+        }
+        let mut child = cmd.spawn().context("failed to spawn lspmux client")?;
 
         let stdin = child.stdin.take().context("no stdin on child")?;
         let stdout = child.stdout.take().context("no stdout on child")?;
@@ -178,6 +202,11 @@ impl LspClient {
     }
 
     /// Send a typed LSP request and await the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request times out, the server returns an error,
+    /// or the response cannot be deserialized.
     pub async fn request<R: Request>(&self, params: R::Params) -> Result<R::Result>
     where
         R::Params: Serialize,
@@ -251,6 +280,10 @@ impl LspClient {
     }
 
     /// Send a `textDocument/hover` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LSP request fails.
     pub async fn hover(
         &self,
         file: &str,
@@ -265,6 +298,10 @@ impl LspClient {
     }
 
     /// Send a `textDocument/definition` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LSP request fails.
     pub async fn goto_definition(
         &self,
         file: &str,
@@ -280,6 +317,10 @@ impl LspClient {
     }
 
     /// Send a `textDocument/references` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LSP request fails.
     pub async fn find_references(
         &self,
         file: &str,
