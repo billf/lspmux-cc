@@ -54,6 +54,30 @@ fn binary_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Count direct child processes of `parent_pid` whose command contains `needle`.
+fn count_direct_children_named(parent_pid: u32, needle: &str) -> usize {
+    let output = match StdCommand::new("ps").args(["-Ao", "ppid=,comm="]).output() {
+        Ok(out) if out.status.success() => out,
+        _ => return 0,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let mut parts = trimmed.split_whitespace();
+            let ppid = parts.next()?.parse::<u32>().ok()?;
+            let cmd = parts.next()?;
+            Some((ppid, cmd))
+        })
+        .filter(|(ppid, cmd)| *ppid == parent_pid && cmd.contains(needle))
+        .count()
+}
+
 /// Find a free TCP port by binding to port 0.
 fn find_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind to free port");
@@ -246,11 +270,15 @@ async fn two_clients_share_single_rust_analyzer() {
         "Client B: expected multiple references to LspClient, got {count_b}"
     );
 
-    // ── 9. Verify single rust-analyzer ──────────────────────────────────
-    // Count rust-analyzer processes spawned by our lspmux server.
-    // Note: this checks system-wide, so may see extra if other instances
-    // are running. We just verify it's at least 1 (our server started one).
-    // The real proof is that two clients got results — with mux, one RA serves both.
+    // ── 9. Verify single rust-analyzer under our isolated lspmux server ─
+    let server_pid = server_proc
+        .id()
+        .expect("lspmux server process should have a pid");
+    let ra_children = count_direct_children_named(server_pid, "rust-analyzer");
+    assert_eq!(
+        ra_children, 1,
+        "expected exactly one rust-analyzer child under lspmux server pid {server_pid}, found {ra_children}"
+    );
 
     // ── 10. Shutdown ────────────────────────────────────────────────────
     client_a.shutdown().await;
