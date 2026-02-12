@@ -6,7 +6,7 @@ description = "MCP server for lspmux rust-analyzer integration"
 license = "MIT"
 
 [dependencies]
-rmcp = { version = "0.14", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "0.15", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
