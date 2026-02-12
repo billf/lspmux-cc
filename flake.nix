@@ -22,6 +22,10 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ];
 
+      imports = [
+        inputs.flake-parts.flakeModules.easyOverlay
+      ];
+
       perSystem = { config, self', pkgs, system, lib, ... }:
         let
           craneLib = crane.mkLib pkgs;
@@ -42,6 +46,10 @@
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         in
         {
+          overlayAttrs = {
+            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer-nightly;
+          };
+
           packages = {
             lspmux-cc-mcp = craneLib.buildPackage (commonArgs // {
               inherit cargoArtifacts;
