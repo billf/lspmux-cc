@@ -113,16 +113,21 @@ async fn main() -> Result<()> {
 
     // Start MCP server on stdio
     let transport = stdio();
-    let service = server
-        .serve(transport)
-        .await
-        .context("failed to start MCP server")?;
+    let service = match server.serve(transport).await {
+        Ok(service) => service,
+        Err(e) => {
+            lsp.shutdown().await;
+            return Err(e).context("failed to start MCP server");
+        }
+    };
 
     // Wait for the service to finish
-    service.waiting().await?;
+    let waiting_result = service.waiting().await;
 
     // Gracefully shut down LSP child process
     lsp.shutdown().await;
+
+    waiting_result.context("MCP server exited with an error")?;
 
     Ok(())
 }

@@ -130,7 +130,9 @@ impl LspClient {
             .arg(ra_bin)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            // Do not pipe stderr unless we actively drain it, otherwise verbose
+            // child logging can fill the pipe buffer and block the process.
+            .stderr(std::process::Stdio::inherit());
         for &(key, val) in env {
             cmd.env(key, val);
         }
