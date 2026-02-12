@@ -55,11 +55,18 @@ fn binary_exists(name: &str) -> bool {
 }
 
 /// Count direct child processes of `parent_pid` whose command contains `needle`.
+///
+/// Panics if the `ps` command fails, since that indicates a broken test environment.
 fn count_direct_children_named(parent_pid: u32, needle: &str) -> usize {
-    let output = match StdCommand::new("ps").args(["-Ao", "ppid=,comm="]).output() {
-        Ok(out) if out.status.success() => out,
-        _ => return 0,
-    };
+    let output = StdCommand::new("ps")
+        .args(["-Ao", "ppid=,comm="])
+        .output()
+        .expect("failed to run `ps` — is it available on PATH?");
+    assert!(
+        output.status.success(),
+        "ps exited with non-zero status: {}",
+        output.status
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout

@@ -77,7 +77,10 @@ pub fn file_uri(path: &str) -> Result<Uri> {
 /// Extract a file path from a `file://` URI string.
 pub fn uri_to_path(uri: &Uri) -> String {
     let s = uri.as_str();
-    let raw = s.strip_prefix("file://").unwrap_or(s);
+    let Some(raw) = s.strip_prefix("file://") else {
+        tracing::warn!("uri_to_path called with non-file URI: {s}");
+        return s.to_string();
+    };
     percent_decode_str(raw)
         .decode_utf8()
         .map_or_else(|_| raw.to_string(), std::borrow::Cow::into_owned)
