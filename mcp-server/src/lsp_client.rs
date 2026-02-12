@@ -53,7 +53,11 @@ pub struct LspClient {
 ///
 /// Returns an error if the path cannot be parsed as a valid URI.
 pub fn file_uri(path: &str) -> Result<Uri> {
-    let uri_str = format!("file://{path}");
+    if !std::path::Path::new(path).is_absolute() {
+        bail!("invalid absolute file path for URI: {path}");
+    }
+
+    let uri_str = format!("file://{}", percent_encode_path(path));
     uri_str
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid file URI for path {path}: {e}"))
@@ -62,7 +66,64 @@ pub fn file_uri(path: &str) -> Result<Uri> {
 /// Extract a file path from a `file://` URI string.
 pub fn uri_to_path(uri: &Uri) -> String {
     let s = uri.as_str();
-    s.strip_prefix("file://").unwrap_or(s).to_string()
+    let path = s.strip_prefix("file://").unwrap_or(s);
+    percent_decode_path(path).unwrap_or_else(|| path.to_string())
+}
+
+fn percent_encode_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for &b in path.as_bytes() {
+        if is_unreserved_path_byte(b) {
+            encoded.push(char::from(b));
+        } else {
+            encoded.push('%');
+            encoded.push(hex_upper(b >> 4));
+            encoded.push(hex_upper(b & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn percent_decode_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut i = 0;
+    let mut decoded = Vec::with_capacity(bytes.len());
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = hex_value(bytes[i + 1])?;
+            let lo = hex_value(bytes[i + 2])?;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+const fn is_unreserved_path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~' || b == b'/'
+}
+
+const fn hex_upper(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'A' + (nibble - 10)) as char,
+        _ => '?',
+    }
+}
+
+const fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Detect the LSP `languageId` from a file extension.
@@ -225,7 +286,10 @@ impl LspClient {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        self.send_message(&msg).await?;
+        if let Err(e) = self.send_message(&msg).await {
+            self.pending.lock().await.remove(&id);
+            return Err(e);
+        }
 
         let response = match timeout(LSP_REQUEST_TIMEOUT, rx).await {
             Ok(Ok(response)) => response,
@@ -517,9 +581,21 @@ mod tests {
     }
 
     #[test]
+    fn file_uri_percent_encodes_spaces() {
+        let uri = file_uri("/tmp/space file.rs").unwrap();
+        assert_eq!(uri.as_str(), "file:///tmp/space%20file.rs");
+    }
+
+    #[test]
     fn uri_to_path_round_trip() {
         let uri = file_uri("/tmp/test.rs").unwrap();
         assert_eq!(uri_to_path(&uri), "/tmp/test.rs");
+    }
+
+    #[test]
+    fn uri_to_path_decodes_percent_encoding() {
+        let uri: Uri = "file:///tmp/space%20file.rs".parse().unwrap();
+        assert_eq!(uri_to_path(&uri), "/tmp/space file.rs");
     }
 
     #[test]
@@ -548,5 +624,34 @@ mod tests {
         assert_eq!(params.position.line, 10);
         assert_eq!(params.position.character, 5);
         assert!(params.text_document.uri.as_str().ends_with("/tmp/test.rs"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::significant_drop_tightening)]
+    async fn request_send_failure_cleans_pending_entry() {
+        let mut child = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+
+        let client = LspClient {
+            child_stdin: Arc::new(Mutex::new(stdin)),
+            next_id: AtomicI64::new(1),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            opened_files: Mutex::new(HashMap::new()),
+            child: Arc::new(Mutex::new(child)),
+            alive: Arc::new(AtomicBool::new(false)),
+        };
+
+        let err = client.request::<lsp_types::request::Shutdown>(()).await;
+        assert!(err.is_err());
+        assert!(client.pending.lock().await.is_empty());
+
+        {
+            let mut child = client.child.lock().await;
+            let _ = child.kill().await;
+        }
     }
 }
