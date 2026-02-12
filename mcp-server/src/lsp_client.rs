@@ -16,6 +16,7 @@ use lsp_types::{
     InitializedParams, TextDocumentContentChangeEvent, TextDocumentItem, Uri,
     VersionedTextDocumentIdentifier,
 };
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -47,17 +48,27 @@ pub struct LspClient {
     alive: Arc<AtomicBool>,
 }
 
+/// Bytes to percent-encode in file URI paths. Encodes everything except
+/// unreserved characters (RFC 3986 Section 2.3) and `/` (path separator).
+const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
+
 /// Create a `file://` URI from an absolute file path.
 ///
 /// # Errors
 ///
-/// Returns an error if the path cannot be parsed as a valid URI.
+/// Returns an error if the path is not absolute or cannot be parsed as a valid URI.
 pub fn file_uri(path: &str) -> Result<Uri> {
     if !std::path::Path::new(path).is_absolute() {
-        bail!("invalid absolute file path for URI: {path}");
+        bail!("path must be absolute for file URI, got: {path}");
     }
 
-    let uri_str = format!("file://{}", percent_encode_path(path));
+    let encoded = utf8_percent_encode(path, PATH_ENCODE_SET);
+    let uri_str = format!("file://{encoded}");
     uri_str
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid file URI for path {path}: {e}"))
@@ -66,64 +77,10 @@ pub fn file_uri(path: &str) -> Result<Uri> {
 /// Extract a file path from a `file://` URI string.
 pub fn uri_to_path(uri: &Uri) -> String {
     let s = uri.as_str();
-    let path = s.strip_prefix("file://").unwrap_or(s);
-    percent_decode_path(path).unwrap_or_else(|| path.to_string())
-}
-
-fn percent_encode_path(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for &b in path.as_bytes() {
-        if is_unreserved_path_byte(b) {
-            encoded.push(char::from(b));
-        } else {
-            encoded.push('%');
-            encoded.push(hex_upper(b >> 4));
-            encoded.push(hex_upper(b & 0x0f));
-        }
-    }
-    encoded
-}
-
-fn percent_decode_path(path: &str) -> Option<String> {
-    let bytes = path.as_bytes();
-    let mut i = 0;
-    let mut decoded = Vec::with_capacity(bytes.len());
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 2 >= bytes.len() {
-                return None;
-            }
-            let hi = hex_value(bytes[i + 1])?;
-            let lo = hex_value(bytes[i + 2])?;
-            decoded.push((hi << 4) | lo);
-            i += 3;
-        } else {
-            decoded.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-
-const fn is_unreserved_path_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~' || b == b'/'
-}
-
-const fn hex_upper(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'A' + (nibble - 10)) as char,
-        _ => '?',
-    }
-}
-
-const fn hex_value(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    let raw = s.strip_prefix("file://").unwrap_or(s);
+    percent_decode_str(raw)
+        .decode_utf8()
+        .map_or_else(|_| raw.to_string(), std::borrow::Cow::into_owned)
 }
 
 /// Detect the LSP `languageId` from a file extension.
@@ -596,6 +553,17 @@ mod tests {
     fn uri_to_path_decodes_percent_encoding() {
         let uri: Uri = "file:///tmp/space%20file.rs".parse().unwrap();
         assert_eq!(uri_to_path(&uri), "/tmp/space file.rs");
+    }
+
+    #[test]
+    fn file_uri_round_trip_non_ascii() {
+        let uri = file_uri("/tmp/caf\u{00e9}.rs").unwrap();
+        assert_eq!(uri_to_path(&uri), "/tmp/caf\u{00e9}.rs");
+    }
+
+    #[test]
+    fn file_uri_rejects_relative_path() {
+        assert!(file_uri("relative/path.rs").is_err());
     }
 
     #[test]
