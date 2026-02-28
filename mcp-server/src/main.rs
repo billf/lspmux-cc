@@ -35,10 +35,24 @@ impl ServerHandler for LspmuxMcpServer {
                 ..Default::default()
             },
             instructions: Some(
-                "Provides rust-analyzer intelligence via lspmux. \
-                 Use rust_diagnostics to check for errors, rust_hover for type info, \
-                 rust_goto_definition to find definitions, and rust_find_references \
-                 to find all usages."
+                "Provides rust-analyzer intelligence for Rust development via lspmux.\n\
+                 \n\
+                 Tools:\n\
+                 - rust_diagnostics(file_path): compiler errors and warnings for a file\n\
+                 - rust_hover(file_path, line, character): type info and docs at a position\n\
+                 - rust_goto_definition(file_path, line, character): find definition location\n\
+                 - rust_find_references(file_path, line, character): find all references\n\
+                 - rust_workspace_symbol(query): find symbols by name across the workspace\n\
+                 - rust_server_status(): check server health and active workspace root\n\
+                 \n\
+                 Position format: line and character inputs are ZERO-BASED (first line = 0).\n\
+                 Output locations (file:line:col) are ONE-BASED. Subtract 1 from each before\n\
+                 using as input to another tool.\n\
+                 \n\
+                 Workflow: run rust_diagnostics after edits to check for errors. If results\n\
+                 seem stale, wait 2-3 seconds and retry (rust-analyzer is re-indexing).\n\
+                 All file paths must be absolute. Tools are read-only and workspace-scoped.\n\
+                 Use rust_server_status to confirm the correct workspace root is active."
                     .into(),
             ),
             capabilities: ServerCapabilities {
@@ -97,6 +111,16 @@ async fn main() -> Result<()> {
             .ok()
             .and_then(|p| p.to_str().map(String::from))
     });
+
+    if std::env::var("WORKSPACE_ROOT").is_err() {
+        tracing::warn!(
+            "WORKSPACE_ROOT env var not set; using current_dir as fallback: {:?}. \
+             Add WORKSPACE_ROOT to .mcp.json env block for correct workspace detection.",
+            workspace_root
+        );
+    } else {
+        tracing::info!("workspace root: {:?}", workspace_root);
+    }
 
     tracing::info!("Starting lspmux-cc-mcp server");
     tracing::info!("lspmux binary: {lspmux_bin}");
