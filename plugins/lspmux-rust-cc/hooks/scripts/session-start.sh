@@ -5,6 +5,7 @@ set -euo pipefail
 # Outputs a systemMessage if successful.
 
 LSPMUX_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/lspmux"
+WS="${WORKSPACE_ROOT:-(not set)}"
 
 check_running() {
     "${LSPMUX_BIN}" status >/dev/null 2>&1
@@ -17,7 +18,8 @@ fi
 
 # Already running?
 if check_running; then
-    echo '{"systemMessage": "lspmux server is running. Shared rust-analyzer active."}'
+    printf '{"systemMessage": "lspmux server is running. Workspace: %s\\nTools: rust_diagnostics, rust_hover, rust_goto_definition, rust_find_references, rust_workspace_symbol, rust_server_status\\nCoordinates: inputs are 0-based; output file:line:col is 1-based (subtract 1 to reuse as input)."}' "${WS}"
+    echo
     exit 0
 fi
 
@@ -28,7 +30,8 @@ if [ -f "${PLIST}" ]; then
     launchctl bootstrap "gui/$(id -u)" "${PLIST}" 2>/dev/null || true
     sleep 2
     if check_running; then
-        echo '{"systemMessage": "lspmux server started via launchd. Shared rust-analyzer active."}'
+        printf '{"systemMessage": "lspmux server started via launchd. Workspace: %s\\nTools: rust_diagnostics, rust_hover, rust_goto_definition, rust_find_references, rust_workspace_symbol, rust_server_status\\nCoordinates: inputs are 0-based; output file:line:col is 1-based (subtract 1 to reuse as input)."}' "${WS}"
+        echo
         exit 0
     fi
 fi
@@ -38,7 +41,8 @@ fi
 disown
 sleep 2
 if check_running; then
-    echo '{"systemMessage": "lspmux server started directly. Shared rust-analyzer active."}'
+    printf '{"systemMessage": "lspmux server started directly. Workspace: %s\\nTools: rust_diagnostics, rust_hover, rust_goto_definition, rust_find_references, rust_workspace_symbol, rust_server_status\\nCoordinates: inputs are 0-based; output file:line:col is 1-based (subtract 1 to reuse as input)."}' "${WS}"
+    echo
     exit 0
 fi
 
