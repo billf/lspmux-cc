@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use lsp_types::{
-    request::{GotoDefinition, HoverRequest, References, Request},
+    request::{GotoDefinition, HoverRequest, References, Request, WorkspaceSymbolRequest},
     ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
     InitializedParams, TextDocumentContentChangeEvent, TextDocumentItem, Uri,
-    VersionedTextDocumentIdentifier,
+    VersionedTextDocumentIdentifier, WorkspaceSymbolParams,
 };
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,10 @@ pub struct LspClient {
     child: Arc<Mutex<Child>>,
     /// Set to `false` when the reader task exits (child process died or stdout closed).
     alive: Arc<AtomicBool>,
+    /// Workspace root path (set after LSP initialize handshake).
+    workspace_root: tokio::sync::Mutex<Option<String>>,
+    /// rust-analyzer server version (set after LSP initialize handshake).
+    ra_version: tokio::sync::Mutex<Option<String>>,
 }
 
 /// Bytes to percent-encode in file URI paths. Encodes everything except
@@ -194,6 +198,8 @@ impl LspClient {
             opened_files: Mutex::new(HashMap::new()),
             child: Arc::new(Mutex::new(child)),
             alive,
+            workspace_root: tokio::sync::Mutex::new(None),
+            ra_version: tokio::sync::Mutex::new(None),
         };
 
         // Initialize handshake
@@ -209,10 +215,14 @@ impl LspClient {
             ..InitializeParams::default()
         };
 
-        let _init_result = client
+        let init_result = client
             .request::<lsp_types::request::Initialize>(init_params)
             .await
             .context("LSP initialize failed")?;
+
+        // Store server metadata for rust_server_status tool
+        *client.workspace_root.lock().await = workspace_root.map(String::from);
+        *client.ra_version.lock().await = init_result.server_info.and_then(|info| info.version);
 
         // Send initialized notification
         client
@@ -432,6 +442,41 @@ impl LspClient {
         }
     }
 
+    /// Whether the LSP child process is still alive.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The workspace root path passed at initialization.
+    pub async fn workspace_root(&self) -> Option<String> {
+        self.workspace_root.lock().await.clone()
+    }
+
+    /// The rust-analyzer server version from the initialize response.
+    pub async fn ra_version(&self) -> Option<String> {
+        self.ra_version.lock().await.clone()
+    }
+
+    /// Search for symbols matching `query` across the workspace.
+    ///
+    /// Returns `None` if the server returned no results, or the response
+    /// variants from `WorkspaceSymbolResponse` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request times out or the LSP server returns an error.
+    pub async fn workspace_symbols(
+        &self,
+        query: impl Into<String>,
+    ) -> anyhow::Result<Option<lsp_types::WorkspaceSymbolResponse>> {
+        let params = WorkspaceSymbolParams {
+            query: query.into(),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        self.request::<WorkspaceSymbolRequest>(params).await
+    }
+
     /// Gracefully shut down the LSP server and child process.
     ///
     /// Sends the LSP `shutdown` request, then `exit` notification, and finally
@@ -614,6 +659,8 @@ mod tests {
             opened_files: Mutex::new(HashMap::new()),
             child: Arc::new(Mutex::new(child)),
             alive: Arc::new(AtomicBool::new(false)),
+            workspace_root: tokio::sync::Mutex::new(None),
+            ra_version: tokio::sync::Mutex::new(None),
         };
 
         let err = client.request::<lsp_types::request::Shutdown>(()).await;

@@ -63,6 +63,17 @@ pub struct PositionParam {
     pub character: u32,
 }
 
+/// Tool parameters: workspace symbol search query.
+#[derive(Deserialize, JsonSchema)]
+pub struct WorkspaceSymbolParam {
+    /// Substring to search for in symbol names across the workspace.
+    pub query: String,
+}
+
+/// Empty parameter struct for tools that take no arguments.
+#[derive(Deserialize, JsonSchema)]
+pub struct NoParams {}
+
 /// Format a location as `file:line:col`.
 fn format_location(loc: &lsp_types::Location) -> String {
     let path = uri_to_path(&loc.uri);
@@ -304,6 +315,81 @@ impl RustAnalyzerTools {
             )])),
             Err(e) => Ok(tool_error(format!("Find references failed: {e}"))),
         }
+    }
+
+    /// Search for symbols by name across the workspace.
+    #[tool(
+        name = "rust_workspace_symbol",
+        description = "Search for symbols (functions, structs, traits, enums, etc.) by name across the entire workspace. Returns locations in file:line:col format (1-based). Useful for navigating without knowing which file a symbol is in."
+    )]
+    async fn workspace_symbol(
+        &self,
+        params: Parameters<WorkspaceSymbolParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let query = &params.0.query;
+        match self.lsp.workspace_symbols(query.clone()).await {
+            Ok(Some(response)) => {
+                let entries: Vec<(String, lsp_types::Location)> = match response {
+                    lsp_types::WorkspaceSymbolResponse::Flat(symbols) => symbols
+                        .into_iter()
+                        .map(|s| (format!("{:?} {}", s.kind, s.name), s.location))
+                        .collect(),
+                    lsp_types::WorkspaceSymbolResponse::Nested(symbols) => symbols
+                        .into_iter()
+                        .filter_map(|s| {
+                            if let lsp_types::OneOf::Left(loc) = s.location {
+                                Some((format!("{:?} {}", s.kind, s.name), loc))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                };
+                if entries.is_empty() {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "No symbols found matching {query:?}."
+                    ))]));
+                }
+                let text = entries
+                    .iter()
+                    .map(|(label, loc)| format!("{label} {}", format_location(loc)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let header = format!("Found {} symbol(s) matching {query:?}:\n", entries.len());
+                Ok(CallToolResult::success(vec![Content::text(header + &text)]))
+            }
+            Ok(None) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "No symbols found matching {query:?}."
+            ))])),
+            Err(e) => Ok(tool_error(format!("Workspace symbol search failed: {e}"))),
+        }
+    }
+
+    /// Return server health and configuration status.
+    #[tool(
+        name = "rust_server_status",
+        description = "Check rust-analyzer server health and active workspace root. Use this to verify the server is running and analyzing the correct project before running other tools."
+    )]
+    async fn server_status(
+        &self,
+        _params: Parameters<NoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let alive = self.lsp.is_alive();
+        let workspace = self
+            .lsp
+            .workspace_root()
+            .await
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let version = self
+            .lsp
+            .ra_version()
+            .await
+            .unwrap_or_else(|| "<unknown>".to_string());
+
+        let status = if alive { "running" } else { "stopped" };
+        let text =
+            format!("rust-analyzer: {status}\nworkspace root: {workspace}\nversion: {version}");
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 }
 
