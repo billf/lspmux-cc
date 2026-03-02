@@ -1,10 +1,12 @@
 //! MCP tool definitions for rust-analyzer access via lspmux.
 //!
-//! Four read-only tools:
+//! Six read-only tools:
 //! - `rust_diagnostics`: Get errors/warnings for a file
 //! - `rust_hover`: Get type signature + docs at a position
 //! - `rust_goto_definition`: Find definition location
 //! - `rust_find_references`: Find all references
+//! - `rust_workspace_symbol`: Search symbols by name across the workspace
+//! - `rust_server_status`: Check server health and workspace root
 
 use std::path::Path;
 use std::sync::Arc;
