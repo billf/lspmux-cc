@@ -448,6 +448,19 @@ mod tests {
     }
 
     #[test]
+    fn workspace_symbol_param_deserializes() {
+        let json = serde_json::json!({ "query": "MyStruct" });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.query, "MyStruct");
+    }
+
+    #[test]
+    fn no_params_deserializes_from_empty_object() {
+        let json = serde_json::json!({});
+        let _param: NoParams = serde_json::from_value(json).unwrap();
+    }
+
+    #[test]
     fn format_location_one_indexed() {
         let loc = lsp_types::Location {
             uri: lspmux_cc_mcp::lsp_client::file_uri("/tmp/test.rs").unwrap(),

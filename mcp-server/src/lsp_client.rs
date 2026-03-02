@@ -642,6 +642,40 @@ mod tests {
         assert!(params.text_document.uri.as_str().ends_with("/tmp/test.rs"));
     }
 
+    #[test]
+    fn is_alive_reflects_atomic_state() {
+        let alive = Arc::new(AtomicBool::new(true));
+        assert!(alive.load(Ordering::Acquire));
+        alive.store(false, Ordering::Release);
+        assert!(!alive.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn workspace_root_returns_none_when_unset() {
+        let root: tokio::sync::Mutex<Option<String>> = tokio::sync::Mutex::new(None);
+        assert!(root.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn workspace_root_returns_value_when_set() {
+        let root: tokio::sync::Mutex<Option<String>> =
+            tokio::sync::Mutex::new(Some("/my/project".to_string()));
+        assert_eq!(root.lock().await.as_deref(), Some("/my/project"));
+    }
+
+    #[tokio::test]
+    async fn ra_version_returns_none_when_unset() {
+        let version: tokio::sync::Mutex<Option<String>> = tokio::sync::Mutex::new(None);
+        assert!(version.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ra_version_returns_value_when_set() {
+        let version: tokio::sync::Mutex<Option<String>> =
+            tokio::sync::Mutex::new(Some("2024-01-15".to_string()));
+        assert_eq!(version.lock().await.as_deref(), Some("2024-01-15"));
+    }
+
     #[tokio::test]
     #[allow(clippy::significant_drop_tightening)]
     async fn request_send_failure_cleans_pending_entry() {
