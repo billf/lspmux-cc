@@ -106,13 +106,14 @@ async fn main() -> Result<()> {
         format!("{xdg_data}/lspmux-rust-analyzer/current/rust-analyzer")
     });
 
-    let workspace_root = std::env::var("WORKSPACE_ROOT").ok().or_else(|| {
+    let ws_env = std::env::var("WORKSPACE_ROOT").ok();
+    let workspace_root = ws_env.clone().or_else(|| {
         std::env::current_dir()
             .ok()
             .and_then(|p| p.to_str().map(String::from))
     });
 
-    if std::env::var("WORKSPACE_ROOT").is_err() {
+    if ws_env.is_none() {
         tracing::warn!(
             "WORKSPACE_ROOT env var not set; using current_dir as fallback: {:?}. \
              Add WORKSPACE_ROOT to .mcp.json env block for correct workspace detection.",
