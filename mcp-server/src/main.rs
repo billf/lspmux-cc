@@ -92,11 +92,18 @@ async fn main() -> Result<()> {
         .init();
 
     // Find binaries
-    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{home}/.cargo")
+    let lspmux_bin = std::env::var("LSPMUX_PATH").unwrap_or_else(|_| {
+        which::which("lspmux").map_or_else(
+            |_| {
+                let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    format!("{home}/.cargo")
+                });
+                format!("{cargo_home}/bin/lspmux")
+            },
+            |p| p.to_string_lossy().into_owned(),
+        )
     });
-    let lspmux_bin = format!("{cargo_home}/bin/lspmux");
 
     let ra_bin = std::env::var("RUST_ANALYZER_PATH").unwrap_or_else(|_| {
         let xdg_data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
