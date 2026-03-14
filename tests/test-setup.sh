@@ -52,8 +52,6 @@ done
 
 # --- TOML validity ---
 echo "-- TOML validity --"
-SOCKET_TEMPLATE_PATTERN="^listen = \\[\"unix\", \"\\\${SOCKET_PATH}\"\\]$"
-CONNECT_TEMPLATE_PATTERN="^connect = \\[\"unix\", \"\\\${SOCKET_PATH}\"\\]$"
 if python3 -c "import importlib.util, pathlib, sys; p=pathlib.Path('${SCRIPT_DIR}/config/lspmux.toml'); mod = 'tomllib' if importlib.util.find_spec('tomllib') else 'tomli' if importlib.util.find_spec('tomli') else None; sys.exit(2 if mod is None else 0)" 2>/dev/null; then
     if python3 -c "import importlib.util, pathlib; p=pathlib.Path('${SCRIPT_DIR}/config/lspmux.toml'); mod = 'tomllib' if importlib.util.find_spec('tomllib') else 'tomli'; parser = __import__(mod); parser.load(open(p, 'rb'))" 2>/dev/null; then
         pass "config/lspmux.toml is valid TOML"
@@ -62,8 +60,8 @@ if python3 -c "import importlib.util, pathlib, sys; p=pathlib.Path('${SCRIPT_DIR
     fi
 elif grep -q '^instance_timeout = 300$' "${SCRIPT_DIR}/config/lspmux.toml" \
     && grep -q '^gc_interval = 10$' "${SCRIPT_DIR}/config/lspmux.toml" \
-    && grep -q "${SOCKET_TEMPLATE_PATTERN}" "${SCRIPT_DIR}/config/lspmux.toml" \
-    && grep -q "${CONNECT_TEMPLATE_PATTERN}" "${SCRIPT_DIR}/config/lspmux.toml"; then
+    && grep -Fqx 'listen = "${SOCKET_PATH}"' "${SCRIPT_DIR}/config/lspmux.toml" \
+    && grep -Fqx 'connect = "${SOCKET_PATH}"' "${SCRIPT_DIR}/config/lspmux.toml"; then
     pass "config/lspmux.toml is valid TOML"
 else
     fail "config/lspmux.toml is invalid TOML"
