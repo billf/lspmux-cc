@@ -53,6 +53,7 @@
           packages = {
             lspmux-cc-mcp = craneLib.buildPackage (commonArgs // {
               inherit cargoArtifacts;
+              meta.mainProgram = "lspmux-cc-mcp";
             });
             lspmux = craneLib.buildPackage {
               src = craneLib.cleanCargoSource lspmux-src;
@@ -60,6 +61,7 @@
               buildInputs = lib.optionals pkgs.stdenv.isDarwin [
                 pkgs.libiconv
               ];
+              meta.mainProgram = "lspmux";
             };
             inherit rust-analyzer-nightly;
             default = self'.packages.lspmux-cc-mcp;
