@@ -1,6 +1,6 @@
 //! LSP JSON-RPC client that communicates with lspmux via child process stdio.
 //!
-//! Spawns `lspmux client --server-path <ra>` and speaks LSP over its stdin/stdout.
+//! Spawns `lspmux client --server-path <server>` and speaks LSP over its stdin/stdout.
 //! Handles the `Content-Length` framing, request ID tracking, and the
 //! `initialize`/`initialized` handshake.
 
@@ -35,7 +35,7 @@ const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// maliciously large `Content-Length` header.
 const MAX_LSP_MESSAGE_SIZE: usize = 100 * 1024 * 1024;
 
-/// LSP client that talks to lspmux/rust-analyzer via a child process.
+/// LSP client that talks to lspmux through a child process.
 pub struct LspClient {
     child_stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     next_id: AtomicI64,
@@ -48,8 +48,8 @@ pub struct LspClient {
     alive: Arc<AtomicBool>,
     /// Workspace root path (set after LSP initialize handshake).
     workspace_root: tokio::sync::Mutex<Option<String>>,
-    /// rust-analyzer server version (set after LSP initialize handshake).
-    ra_version: tokio::sync::Mutex<Option<String>>,
+    /// Backend server version (set after LSP initialize handshake).
+    server_version: tokio::sync::Mutex<Option<String>>,
 }
 
 /// Bytes to percent-encode in file URI paths. Encodes everything except
@@ -130,8 +130,12 @@ impl LspClient {
     ///
     /// Returns an error if the child process cannot be spawned or the LSP
     /// initialize handshake fails.
-    pub async fn new(lspmux_bin: &str, ra_bin: &str, workspace_root: Option<&str>) -> Result<Self> {
-        Self::new_with_env(lspmux_bin, ra_bin, workspace_root, &[]).await
+    pub async fn new(
+        lspmux_bin: &str,
+        server_bin: &str,
+        workspace_root: Option<&str>,
+    ) -> Result<Self> {
+        Self::new_with_env(lspmux_bin, server_bin, workspace_root, &[]).await
     }
 
     /// Spawn the lspmux client with extra environment variables set on the child process.
@@ -145,14 +149,14 @@ impl LspClient {
     /// initialize handshake fails.
     pub async fn new_with_env(
         lspmux_bin: &str,
-        ra_bin: &str,
+        server_bin: &str,
         workspace_root: Option<&str>,
         env: &[(&str, &str)],
     ) -> Result<Self> {
         let mut cmd = Command::new(lspmux_bin);
         cmd.arg("client")
             .arg("--server-path")
-            .arg(ra_bin)
+            .arg(server_bin)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             // Do not pipe stderr unless we actively drain it, otherwise verbose
@@ -199,7 +203,7 @@ impl LspClient {
             child: Arc::new(Mutex::new(child)),
             alive,
             workspace_root: tokio::sync::Mutex::new(None),
-            ra_version: tokio::sync::Mutex::new(None),
+            server_version: tokio::sync::Mutex::new(None),
         };
 
         // Initialize handshake
@@ -222,7 +226,7 @@ impl LspClient {
 
         // Store server metadata for rust_server_status tool
         *client.workspace_root.lock().await = workspace_root.map(String::from);
-        *client.ra_version.lock().await = init_result.server_info.and_then(|info| info.version);
+        *client.server_version.lock().await = init_result.server_info.and_then(|info| info.version);
 
         // Send initialized notification
         client
@@ -452,9 +456,9 @@ impl LspClient {
         self.workspace_root.lock().await.clone()
     }
 
-    /// The rust-analyzer server version from the initialize response.
-    pub async fn ra_version(&self) -> Option<String> {
-        self.ra_version.lock().await.clone()
+    /// The backend server version from the initialize response.
+    pub async fn server_version(&self) -> Option<String> {
+        self.server_version.lock().await.clone()
     }
 
     /// Search for symbols matching `query` across the workspace.
@@ -664,13 +668,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ra_version_returns_none_when_unset() {
+    async fn server_version_returns_none_when_unset() {
         let version: tokio::sync::Mutex<Option<String>> = tokio::sync::Mutex::new(None);
         assert!(version.lock().await.is_none());
     }
 
     #[tokio::test]
-    async fn ra_version_returns_value_when_set() {
+    async fn server_version_returns_value_when_set() {
         let version: tokio::sync::Mutex<Option<String>> =
             tokio::sync::Mutex::new(Some("2024-01-15".to_string()));
         assert_eq!(version.lock().await.as_deref(), Some("2024-01-15"));
@@ -694,7 +698,7 @@ mod tests {
             child: Arc::new(Mutex::new(child)),
             alive: Arc::new(AtomicBool::new(false)),
             workspace_root: tokio::sync::Mutex::new(None),
-            ra_version: tokio::sync::Mutex::new(None),
+            server_version: tokio::sync::Mutex::new(None),
         };
 
         let err = client.request::<lsp_types::request::Shutdown>(()).await;

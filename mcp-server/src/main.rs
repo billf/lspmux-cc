@@ -2,7 +2,7 @@
 //!
 //! Architecture:
 //! ```text
-//! Claude Code <-MCP (stdio)-> lspmux-cc-mcp <-LSP (child stdio)-> lspmux client <-socket-> lspmux server -> rust-analyzer
+//! Any MCP host <-MCP (stdio)-> lspmux-cc-mcp <-LSP (child stdio)-> lspmux client <-socket-> lspmux server -> rust-analyzer
 //! ```
 
 mod tools;
@@ -10,6 +10,7 @@ mod tools;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use lspmux_cc_mcp::bootstrap::{RuntimeConfig, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::LspClient;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo, ToolsCapability,
@@ -35,7 +36,8 @@ impl ServerHandler for LspmuxMcpServer {
                 ..Default::default()
             },
             instructions: Some(
-                "Provides rust-analyzer intelligence for Rust development via lspmux.\n\
+                "Provides Rust development intelligence over MCP by talking to a shared \
+                 rust-analyzer instance through lspmux.\n\
                  \n\
                  Tools:\n\
                  - rust_diagnostics(file_path): compiler errors and warnings for a file\n\
@@ -50,9 +52,10 @@ impl ServerHandler for LspmuxMcpServer {
                  using as input to another tool.\n\
                  \n\
                  Workflow: run rust_diagnostics after edits to check for errors. If results\n\
-                 seem stale, wait 2-3 seconds and retry (rust-analyzer is re-indexing).\n\
+                 seem stale, wait 2-3 seconds and retry while rust-analyzer finishes indexing.\n\
                  All file paths must be absolute. Tools are read-only and workspace-scoped.\n\
-                 Use rust_server_status to confirm the correct workspace root is active."
+                 Use rust_server_status to confirm the correct workspace root and shared-service \
+                 bootstrap state."
                     .into(),
             ),
             capabilities: ServerCapabilities {
@@ -91,56 +94,37 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // Find binaries
-    let lspmux_bin = std::env::var("LSPMUX_PATH").unwrap_or_else(|_| {
-        which::which("lspmux").map_or_else(
-            |_| {
-                let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    format!("{home}/.cargo")
-                });
-                format!("{cargo_home}/bin/lspmux")
-            },
-            |p| p.to_string_lossy().into_owned(),
-        )
-    });
-
-    let ra_bin = std::env::var("RUST_ANALYZER_PATH").unwrap_or_else(|_| {
-        let xdg_data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/.local/share")
-        });
-        format!("{xdg_data}/lspmux-rust-analyzer/current/rust-analyzer")
-    });
-
-    let ws_env = std::env::var("WORKSPACE_ROOT").ok();
-    let workspace_root = ws_env.clone().or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(String::from))
-    });
-
-    if ws_env.is_none() {
+    let runtime = RuntimeConfig::discover().context("failed to resolve runtime configuration")?;
+    if std::env::var("WORKSPACE_ROOT").is_err() {
         tracing::warn!(
             "WORKSPACE_ROOT env var not set; using current_dir as fallback: {:?}. \
-             Add WORKSPACE_ROOT to .mcp.json env block for correct workspace detection.",
-            workspace_root
+             Set WORKSPACE_ROOT in your MCP client env for deterministic workspace detection.",
+            runtime.workspace_root
         );
     } else {
-        tracing::info!("workspace root: {:?}", workspace_root);
+        tracing::info!("workspace root: {:?}", runtime.workspace_root);
     }
 
     tracing::info!("Starting lspmux-cc-mcp server");
-    tracing::info!("lspmux binary: {lspmux_bin}");
-    tracing::info!("rust-analyzer binary: {ra_bin}");
+    tracing::info!("lspmux binary: {}", runtime.lspmux_path);
+    tracing::info!("{SERVER_NAME} binary: {}", runtime.server_path);
+
+    let runtime_status = runtime
+        .ensure_service_running()
+        .await
+        .context("failed to prepare shared lspmux service")?;
 
     // Initialize LSP client
-    let lsp = LspClient::new(&lspmux_bin, &ra_bin, workspace_root.as_deref())
-        .await
-        .context("failed to initialize LSP client")?;
+    let lsp = LspClient::new(
+        &runtime.lspmux_path,
+        &runtime.server_path,
+        runtime.workspace_root.as_deref(),
+    )
+    .await
+    .context("failed to initialize LSP client")?;
 
     let lsp = Arc::new(lsp);
-    let tools = RustAnalyzerTools::new(Arc::clone(&lsp));
+    let tools = RustAnalyzerTools::new(Arc::clone(&lsp), runtime_status);
     let server = LspmuxMcpServer { tools };
 
     // Start MCP server on stdio

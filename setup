@@ -1,78 +1,89 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# lspmux-cc setup: install lspmux + rust-analyzer for shared LSP multiplexing.
-# macOS only.
+# lspmux-cc setup: install a shared rust-analyzer+lspmux service and print
+# host-specific integration guidance.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+OS="$(uname -s)"
+HOME_DIR="${HOME}"
+CARGO_HOME="${CARGO_HOME:-$HOME_DIR/.cargo}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME_DIR/.local/share}"
 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-
-LSPMUX_CONFIG_DIR="${XDG_CONFIG_HOME}/lspmux"
-LSPMUX_LOG_DIR="${XDG_STATE_HOME}/lspmux/log"
-LSPMUX_SOCKET_DIR="${XDG_RUNTIME_DIR}/lspmux"
-LSPMUX_SOCKET="${LSPMUX_SOCKET_DIR}/lspmux.sock"
+RUNTIME_BASE="${XDG_RUNTIME_DIR%/}"
+if [ "${OS}" = "Darwin" ]; then
+    LSPMUX_CONFIG_DIR="${HOME_DIR}/Library/Application Support/lspmux"
+else
+    XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME_DIR/.config}"
+    LSPMUX_CONFIG_DIR="${XDG_CONFIG_HOME}/lspmux"
+fi
+LSPMUX_CONFIG_PATH="${LSPMUX_CONFIG_DIR}/config.toml"
+LSPMUX_SOCKET_DIR="${RUNTIME_BASE}/lspmux"
+LSPMUX_SOCKET_PATH="${LSPMUX_SOCKET_DIR}/lspmux.sock"
+LSPMUX_LOG_DIR="${XDG_DATA_HOME}/lspmux/log"
 RA_DATA_DIR="${XDG_DATA_HOME}/lspmux-rust-analyzer"
-
-LAUNCHD_DIR="${HOME}/Library/LaunchAgents"
+RA_BINARY="${RA_DATA_DIR}/current/rust-analyzer"
+LAUNCHD_DIR="${HOME_DIR}/Library/LaunchAgents"
+SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME_DIR/.config}/systemd/user"
 
 info() { echo "==> $*"; }
 warn() { echo "WARNING: $*" >&2; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
 
-# --- Platform check ---
-[ "$(uname -s)" = "Darwin" ] || die "macOS only (for now)"
+ensure_supported_platform() {
+    case "${OS}" in
+        Darwin|Linux) ;;
+        *) die "unsupported platform: ${OS} (expected Darwin or Linux)" ;;
+    esac
+}
 
-# --- Dependency check ---
-for cmd in curl jq cargo; do
-    command -v "${cmd}" >/dev/null 2>&1 || die "Missing required command: ${cmd}"
-done
+require_commands() {
+    for cmd in curl jq cargo; do
+        command -v "${cmd}" >/dev/null 2>&1 || die "missing required command: ${cmd}"
+    done
+}
 
-# --- XDG directories ---
-info "Creating directories..."
-mkdir -p "${LSPMUX_CONFIG_DIR}" "${LSPMUX_LOG_DIR}" "${LSPMUX_SOCKET_DIR}" \
-         "${RA_DATA_DIR}/bin" "${LAUNCHD_DIR}"
+ensure_directories() {
+    mkdir -p "${LSPMUX_CONFIG_DIR}" "${LSPMUX_SOCKET_DIR}" "${LSPMUX_LOG_DIR}" "${RA_DATA_DIR}/bin"
+    if [ "${OS}" = "Darwin" ]; then
+        mkdir -p "${LAUNCHD_DIR}"
+    else
+        mkdir -p "${SYSTEMD_USER_DIR}"
+    fi
+}
 
-# --- Download rust-analyzer ---
-info "Updating rust-analyzer..."
-"${SCRIPT_DIR}/bin/update-rust-analyzer"
+install_rust_analyzer() {
+    info "Updating rust-analyzer..."
+    "${SCRIPT_DIR}/bin/update-rust-analyzer"
+    [ -x "${RA_BINARY}" ] || die "rust-analyzer not found after update"
+}
 
-RA_BINARY="${RA_DATA_DIR}/current/rust-analyzer"
-[ -x "${RA_BINARY}" ] || die "rust-analyzer not found after update"
+install_lspmux() {
+    if command -v lspmux >/dev/null 2>&1; then
+        info "lspmux already installed: $(command -v lspmux)"
+    else
+        info "Installing lspmux via cargo..."
+        cargo install --locked lspmux
+    fi
+    command -v lspmux >/dev/null 2>&1 || die "lspmux not found after install"
+}
 
-# --- Install lspmux ---
-if command -v lspmux >/dev/null 2>&1; then
-    info "lspmux already installed: $(command -v lspmux)"
-else
-    info "Installing lspmux via cargo..."
-    cargo install --locked lspmux
-fi
+write_config() {
+    info "Writing lspmux config to ${LSPMUX_CONFIG_PATH}..."
+    sed "s|\${SOCKET_PATH}|${LSPMUX_SOCKET_PATH}|g" \
+        "${SCRIPT_DIR}/config/lspmux.toml" > "${LSPMUX_CONFIG_PATH}"
+}
 
-LSPMUX_BIN="$(command -v lspmux)"
-[ -x "${LSPMUX_BIN}" ] || die "lspmux not found after install"
-
-# --- Write config ---
-info "Writing lspmux config to ${LSPMUX_CONFIG_DIR}/config.toml..."
-sed "s|\${SOCKET_PATH}|${LSPMUX_SOCKET}|g" \
-    "${SCRIPT_DIR}/config/lspmux.toml" > "${LSPMUX_CONFIG_DIR}/config.toml"
-
-# --- Deploy launchd agents ---
-deploy_plist() {
+deploy_launchd_plist() {
     local src="$1" label="$2"
     local dest="${LAUNCHD_DIR}/${label}.plist"
 
-    info "Deploying ${label}..."
-
-    # Bootout if currently loaded (ignore errors)
+    info "Deploying launchd unit ${label}..."
     launchctl bootout "gui/$(id -u)/${label}" 2>/dev/null || true
 
-    # Template substitution
-    sed -e "s|\${LSPMUX_BIN}|${LSPMUX_BIN}|g" \
-        -e "s|\${CONFIG_PATH}|${LSPMUX_CONFIG_DIR}/config.toml|g" \
+    sed -e "s|\${LSPMUX_BIN}|$(command -v lspmux)|g" \
+        -e "s|\${CONFIG_PATH}|${LSPMUX_CONFIG_PATH}|g" \
         -e "s|\${LOG_DIR}|${LSPMUX_LOG_DIR}|g" \
         -e "s|\${UPDATE_SCRIPT}|${SCRIPT_DIR}/bin/update-rust-analyzer|g" \
         "${src}" > "${dest}"
@@ -80,33 +91,199 @@ deploy_plist() {
     launchctl bootstrap "gui/$(id -u)" "${dest}"
 }
 
-deploy_plist "${SCRIPT_DIR}/launchd/com.lspmux.server.plist" "com.lspmux.server"
-deploy_plist "${SCRIPT_DIR}/launchd/com.rust-analyzer.update.plist" "com.rust-analyzer.update"
+deploy_systemd_units() {
+    info "Deploying systemd user units..."
+    for template in lspmux.service rust-analyzer-update.service rust-analyzer-update.timer; do
+        sed -e "s|\${LSPMUX_BIN}|$(command -v lspmux)|g" \
+            -e "s|\${CONFIG_PATH}|${LSPMUX_CONFIG_PATH}|g" \
+            -e "s|\${LOG_DIR}|${LSPMUX_LOG_DIR}|g" \
+            -e "s|\${UPDATE_SCRIPT}|${SCRIPT_DIR}/bin/update-rust-analyzer|g" \
+            "${SCRIPT_DIR}/systemd/${template}" > "${SYSTEMD_USER_DIR}/${template}"
+    done
 
-# --- Verify ---
-info "Waiting for lspmux to start..."
-sleep 2
+    systemctl --user daemon-reload
+    systemctl --user enable --now lspmux.service
+    systemctl --user enable --now rust-analyzer-update.timer
+}
 
-if lspmux status 2>/dev/null; then
-    info "lspmux is running."
-else
-    warn "lspmux status check failed. Check logs at ${LSPMUX_LOG_DIR}/"
-fi
+start_core_service() {
+    if [ "${OS}" = "Darwin" ]; then
+        deploy_launchd_plist "${SCRIPT_DIR}/launchd/com.lspmux.server.plist" "com.lspmux.server"
+        deploy_launchd_plist "${SCRIPT_DIR}/launchd/com.rust-analyzer.update.plist" "com.rust-analyzer.update"
+    else
+        command -v systemctl >/dev/null 2>&1 || die "systemctl is required on Linux for user-level service setup"
+        deploy_systemd_units
+    fi
+}
 
-# --- Print plugin instructions ---
-echo ""
-echo "Setup complete!"
-echo ""
-echo "To use with Claude Code:"
-echo "  1. Install the plugin:"
-echo "     claude plugin add-marketplace ${SCRIPT_DIR}"
-echo "  2. Disable built-in rust-analyzer:"
-echo "     claude plugin disable rust-analyzer-lsp --scope user"
-echo "  3. Install the lspmux plugin:"
-echo "     claude plugin install lspmux-rust-cc --scope user"
-echo ""
-echo "Rust-analyzer binary: ${RA_BINARY}"
-echo "lspmux binary: ${LSPMUX_BIN}"
-echo "Config: ${LSPMUX_CONFIG_DIR}/config.toml"
-echo "Socket: ${LSPMUX_SOCKET}"
-echo "Logs: ${LSPMUX_LOG_DIR}/"
+print_core_summary() {
+    echo
+    echo "Core setup complete."
+    echo "lspmux binary: $(command -v lspmux)"
+    echo "rust-analyzer binary: ${RA_BINARY}"
+    echo "Config: ${LSPMUX_CONFIG_PATH}"
+    echo "Socket: ${LSPMUX_SOCKET_PATH}"
+    echo "Logs: ${LSPMUX_LOG_DIR}"
+}
+
+cmd_core() {
+    ensure_supported_platform
+    require_commands
+    ensure_directories
+    install_rust_analyzer
+    install_lspmux
+    write_config
+    start_core_service
+    print_core_summary
+}
+
+cmd_host_claude_code() {
+    cat <<EOF
+Claude Code host adapter
+
+1. Install the marketplace entry:
+   claude plugin add-marketplace ${SCRIPT_DIR}
+2. Disable Claude's built-in rust-analyzer:
+   claude plugin disable rust-analyzer-lsp --scope user
+3. Install the lspmux Rust plugin:
+   claude plugin install lspmux-rust-cc --scope user
+
+Reference: ${SCRIPT_DIR}/docs/hosts/claude-code.md
+EOF
+}
+
+cmd_host_codex() {
+    local fallback_lspmux
+    fallback_lspmux="\$HOME/.cargo/bin/lspmux"
+    cat <<EOF
+Codex host adapter
+
+Set these environment variables for the MCP process:
+  WORKSPACE_ROOT=/absolute/path/to/workspace
+  LSPMUX_BOOTSTRAP=auto
+  LSPMUX_PATH=$(command -v lspmux 2>/dev/null || echo "${fallback_lspmux}")
+  RUST_ANALYZER_PATH=${RA_BINARY}
+  LSPMUX_CONFIG_PATH=${LSPMUX_CONFIG_PATH}
+  LSPMUX_SOCKET_PATH=${LSPMUX_SOCKET_PATH}
+
+Launch the MCP server with:
+  ${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp
+
+Reference: ${SCRIPT_DIR}/docs/hosts/codex.md
+EOF
+}
+
+cmd_host_generic_mcp() {
+    cat <<EOF
+Generic MCP adapter
+
+Use the same environment contract as Codex and launch:
+  ${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp
+
+Reference: ${SCRIPT_DIR}/docs/hosts/generic-mcp.md
+EOF
+}
+
+cmd_doctor() {
+    ensure_supported_platform
+
+    local failures=0
+    echo "lspmux doctor"
+    echo "  platform: ${OS}"
+    echo "  config: ${LSPMUX_CONFIG_PATH}"
+    echo "  socket: ${LSPMUX_SOCKET_PATH}"
+
+    if command -v lspmux >/dev/null 2>&1; then
+        echo "  lspmux: $(command -v lspmux)"
+    else
+        echo "  lspmux: missing"
+        failures=$((failures + 1))
+    fi
+
+    if [ -x "${RA_BINARY}" ]; then
+        echo "  rust-analyzer: ${RA_BINARY}"
+    else
+        echo "  rust-analyzer: missing (${RA_BINARY})"
+        failures=$((failures + 1))
+    fi
+
+    if [ -f "${LSPMUX_CONFIG_PATH}" ]; then
+        echo "  config file: present"
+    else
+        echo "  config file: missing"
+        failures=$((failures + 1))
+    fi
+
+    if [ -S "${LSPMUX_SOCKET_PATH}" ]; then
+        echo "  shared socket: ready"
+    else
+        echo "  shared socket: not ready"
+        failures=$((failures + 1))
+    fi
+
+    if [ "${OS}" = "Darwin" ]; then
+        if [ -f "${LAUNCHD_DIR}/com.lspmux.server.plist" ]; then
+            echo "  launchd unit: present"
+        else
+            echo "  launchd unit: missing"
+            failures=$((failures + 1))
+        fi
+    else
+        if [ -f "${SYSTEMD_USER_DIR}/lspmux.service" ]; then
+            echo "  systemd unit: present"
+        else
+            echo "  systemd unit: missing"
+            failures=$((failures + 1))
+        fi
+    fi
+
+    [ "${failures}" -eq 0 ] || exit 1
+}
+
+cmd_help() {
+    cat <<EOF
+Usage:
+  ./setup core
+  ./setup host claude-code
+  ./setup host codex
+  ./setup host generic-mcp
+  ./setup doctor
+
+Running ./setup with no arguments is equivalent to:
+  ./setup core
+  ./setup host claude-code
+EOF
+}
+
+main() {
+    local command="${1:-default}"
+    case "${command}" in
+        default)
+            cmd_core
+            echo
+            cmd_host_claude_code
+            ;;
+        core)
+            cmd_core
+            ;;
+        host)
+            case "${2:-}" in
+                claude-code) cmd_host_claude_code ;;
+                codex) cmd_host_codex ;;
+                generic-mcp) cmd_host_generic_mcp ;;
+                *) die "unknown host adapter: ${2:-<missing>}" ;;
+            esac
+            ;;
+        doctor)
+            cmd_doctor
+            ;;
+        help|-h|--help)
+            cmd_help
+            ;;
+        *)
+            die "unknown command: ${command}"
+            ;;
+    esac
+}
+
+main "$@"

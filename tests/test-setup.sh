@@ -16,9 +16,11 @@ echo "=== Phase 1 Setup Tests ==="
 echo "-- File existence --"
 for f in setup bin/update-rust-analyzer config/lspmux.toml \
          launchd/com.lspmux.server.plist launchd/com.rust-analyzer.update.plist \
+         systemd/lspmux.service systemd/rust-analyzer-update.service systemd/rust-analyzer-update.timer \
          plugins/lspmux-rust-cc/.claude-plugin/plugin.json \
          plugins/lspmux-rust-cc/bin/lspmux plugins/lspmux-rust-cc/bin/rust-analyzer \
-         .claude-plugin/marketplace.json; do
+         .claude-plugin/marketplace.json \
+         docs/hosts/claude-code.md docs/hosts/codex.md docs/hosts/generic-mcp.md; do
     if [ -f "${SCRIPT_DIR}/${f}" ]; then
         pass "${f} exists"
     else
@@ -50,7 +52,18 @@ done
 
 # --- TOML validity ---
 echo "-- TOML validity --"
-if python3 -c "import tomllib; tomllib.load(open('${SCRIPT_DIR}/config/lspmux.toml', 'rb'))" 2>/dev/null; then
+SOCKET_TEMPLATE_PATTERN="^listen = \\[\"unix\", \"\\\${SOCKET_PATH}\"\\]$"
+CONNECT_TEMPLATE_PATTERN="^connect = \\[\"unix\", \"\\\${SOCKET_PATH}\"\\]$"
+if python3 -c "import importlib.util, pathlib, sys; p=pathlib.Path('${SCRIPT_DIR}/config/lspmux.toml'); mod = 'tomllib' if importlib.util.find_spec('tomllib') else 'tomli' if importlib.util.find_spec('tomli') else None; sys.exit(2 if mod is None else 0)" 2>/dev/null; then
+    if python3 -c "import importlib.util, pathlib; p=pathlib.Path('${SCRIPT_DIR}/config/lspmux.toml'); mod = 'tomllib' if importlib.util.find_spec('tomllib') else 'tomli'; parser = __import__(mod); parser.load(open(p, 'rb'))" 2>/dev/null; then
+        pass "config/lspmux.toml is valid TOML"
+    else
+        fail "config/lspmux.toml is invalid TOML"
+    fi
+elif grep -q '^instance_timeout = 300$' "${SCRIPT_DIR}/config/lspmux.toml" \
+    && grep -q '^gc_interval = 10$' "${SCRIPT_DIR}/config/lspmux.toml" \
+    && grep -q "${SOCKET_TEMPLATE_PATTERN}" "${SCRIPT_DIR}/config/lspmux.toml" \
+    && grep -q "${CONNECT_TEMPLATE_PATTERN}" "${SCRIPT_DIR}/config/lspmux.toml"; then
     pass "config/lspmux.toml is valid TOML"
 else
     fail "config/lspmux.toml is invalid TOML"

@@ -6,7 +6,7 @@
 //! - `rust_goto_definition`: Find definition location
 //! - `rust_find_references`: Find all references
 //! - `rust_workspace_symbol`: Search symbols by name across the workspace
-//! - `rust_server_status`: Check server health and workspace root
+//! - `rust_server_status`: Check server health and workspace bootstrap status
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,18 +14,14 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content, ListToolsResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ListToolsResult};
 use rmcp::service::RequestContext;
-use rmcp::{tool, tool_router, ErrorData as McpError, RoleServer};
+use rmcp::{tool, tool_router, ErrorData as McpError, Json, RoleServer};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use lspmux_cc_mcp::bootstrap::{RuntimeStatus, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::{file_uri, uri_to_path, LspClient};
-
-/// Create an error `CallToolResult` from a message string.
-fn tool_error(msg: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(msg.into())])
-}
 
 /// Validate that a file path is absolute and exists on disk.
 ///
@@ -45,6 +41,72 @@ fn validate_file_path(path: &str) -> Result<(), McpError> {
         ));
     }
     Ok(())
+}
+
+fn internal_error(msg: impl Into<String>) -> McpError {
+    McpError::internal_error(msg.into(), None)
+}
+
+fn diagnostic_severity_name(severity: Option<lsp_types::DiagnosticSeverity>) -> &'static str {
+    match severity {
+        Some(lsp_types::DiagnosticSeverity::ERROR) => "error",
+        Some(lsp_types::DiagnosticSeverity::WARNING) => "warning",
+        Some(lsp_types::DiagnosticSeverity::INFORMATION) => "info",
+        Some(lsp_types::DiagnosticSeverity::HINT) => "hint",
+        _ => "unknown",
+    }
+}
+
+fn symbol_kind_name(kind: lsp_types::SymbolKind) -> &'static str {
+    match kind {
+        lsp_types::SymbolKind::FILE => "file",
+        lsp_types::SymbolKind::MODULE => "module",
+        lsp_types::SymbolKind::NAMESPACE => "namespace",
+        lsp_types::SymbolKind::PACKAGE => "package",
+        lsp_types::SymbolKind::CLASS => "class",
+        lsp_types::SymbolKind::METHOD => "method",
+        lsp_types::SymbolKind::PROPERTY => "property",
+        lsp_types::SymbolKind::FIELD => "field",
+        lsp_types::SymbolKind::CONSTRUCTOR => "constructor",
+        lsp_types::SymbolKind::ENUM => "enum",
+        lsp_types::SymbolKind::INTERFACE => "interface",
+        lsp_types::SymbolKind::FUNCTION => "function",
+        lsp_types::SymbolKind::VARIABLE => "variable",
+        lsp_types::SymbolKind::CONSTANT => "constant",
+        lsp_types::SymbolKind::STRING => "string",
+        lsp_types::SymbolKind::NUMBER => "number",
+        lsp_types::SymbolKind::BOOLEAN => "boolean",
+        lsp_types::SymbolKind::ARRAY => "array",
+        lsp_types::SymbolKind::OBJECT => "object",
+        lsp_types::SymbolKind::KEY => "key",
+        lsp_types::SymbolKind::NULL => "null",
+        lsp_types::SymbolKind::ENUM_MEMBER => "enum_member",
+        lsp_types::SymbolKind::STRUCT => "struct",
+        lsp_types::SymbolKind::EVENT => "event",
+        lsp_types::SymbolKind::OPERATOR => "operator",
+        lsp_types::SymbolKind::TYPE_PARAMETER => "type_parameter",
+        _ => "unknown",
+    }
+}
+
+fn markup_to_text(contents: lsp_types::HoverContents) -> String {
+    match contents {
+        lsp_types::HoverContents::Markup(markup) => markup.value,
+        lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(value)) => value,
+        lsp_types::HoverContents::Scalar(lsp_types::MarkedString::LanguageString(value)) => {
+            format!("```{}\n{}\n```", value.language, value.value)
+        }
+        lsp_types::HoverContents::Array(items) => items
+            .into_iter()
+            .map(|item| match item {
+                lsp_types::MarkedString::String(value) => value,
+                lsp_types::MarkedString::LanguageString(value) => {
+                    format!("```{}\n{}\n```", value.language, value.value)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
 }
 
 /// Tool parameter: a file path.
@@ -76,30 +138,138 @@ pub struct WorkspaceSymbolParam {
 #[derive(Deserialize, JsonSchema)]
 pub struct NoParams {}
 
-/// Format a location as `file:line:col`.
-fn format_location(loc: &lsp_types::Location) -> String {
-    let path = uri_to_path(&loc.uri);
-    format!(
-        "{}:{}:{}",
-        path,
-        loc.range.start.line + 1,
-        loc.range.start.character + 1,
-    )
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct LocationRecord {
+    pub file_path: String,
+    pub uri: String,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub display: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct PositionRecord {
+    pub line: u32,
+    pub character: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct RangeRecord {
+    pub start: PositionRecord,
+    pub end: PositionRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct DiagnosticRecord {
+    pub severity: String,
+    pub message: String,
+    pub code: Option<String>,
+    pub source: Option<String>,
+    pub location: LocationRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct DiagnosticsResponse {
+    pub file_path: String,
+    pub diagnostic_count: usize,
+    pub diagnostics: Vec<DiagnosticRecord>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct HoverResponse {
+    pub file_path: String,
+    pub requested_position: PositionRecord,
+    pub found: bool,
+    pub contents: String,
+    pub range: Option<RangeRecord>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct LocationsResponse {
+    pub file_path: String,
+    pub requested_position: PositionRecord,
+    pub found: bool,
+    pub location_count: usize,
+    pub locations: Vec<LocationRecord>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkspaceSymbolRecord {
+    pub name: String,
+    pub kind: String,
+    pub container_name: Option<String>,
+    pub location: LocationRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkspaceSymbolsResponse {
+    pub query: String,
+    pub symbol_count: usize,
+    pub symbols: Vec<WorkspaceSymbolRecord>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct ServerStatusResponse {
+    pub server: String,
+    pub server_status: String,
+    pub workspace_root: Option<String>,
+    pub server_version: Option<String>,
+    pub runtime: RuntimeStatus,
+    pub summary: String,
+}
+
+fn location_record(uri: &lsp_types::Uri, range: &lsp_types::Range) -> LocationRecord {
+    let file_path = uri_to_path(uri);
+    LocationRecord {
+        display: format!(
+            "{}:{}:{}",
+            file_path,
+            range.start.line + 1,
+            range.start.character + 1,
+        ),
+        file_path,
+        uri: uri.to_string(),
+        line: range.start.line + 1,
+        column: range.start.character + 1,
+        end_line: range.end.line + 1,
+        end_column: range.end.character + 1,
+    }
+}
+
+fn range_record(range: &lsp_types::Range) -> RangeRecord {
+    RangeRecord {
+        start: PositionRecord {
+            line: range.start.line + 1,
+            character: range.start.character + 1,
+        },
+        end: PositionRecord {
+            line: range.end.line + 1,
+            character: range.end.character + 1,
+        },
+    }
 }
 
 /// MCP server providing rust-analyzer tools via lspmux.
 #[derive(Clone)]
 pub struct RustAnalyzerTools {
     lsp: Arc<LspClient>,
+    runtime_status: RuntimeStatus,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl RustAnalyzerTools {
     /// Create a new tools instance wrapping an LSP client.
-    pub fn new(lsp: Arc<LspClient>) -> Self {
+    pub fn new(lsp: Arc<LspClient>, runtime_status: RuntimeStatus) -> Self {
         Self {
             lsp,
+            runtime_status,
             tool_router: Self::tool_router(),
         }
     }
@@ -107,20 +277,24 @@ impl RustAnalyzerTools {
     /// Get diagnostics (errors and warnings) for a Rust file.
     #[tool(
         name = "rust_diagnostics",
-        description = "Get Rust compiler errors and warnings for a file. Returns diagnostics with line numbers, severity, and messages."
+        description = "Get Rust compiler errors and warnings for a file. Returns structured diagnostics with one-based locations."
     )]
-    async fn diagnostics(&self, params: Parameters<FileParam>) -> Result<CallToolResult, McpError> {
+    async fn diagnostics(
+        &self,
+        params: Parameters<FileParam>,
+    ) -> Result<Json<DiagnosticsResponse>, McpError> {
         let file = &params.0.file_path;
         validate_file_path(file)?;
 
-        // Ensure the file is open in rust-analyzer before requesting diagnostics.
-        if let Err(e) = self.lsp.ensure_file_open(file).await {
-            return Ok(tool_error(format!("Failed to open file: {e}")));
-        }
+        self.lsp
+            .ensure_file_open(file)
+            .await
+            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
 
         let uri = file_uri(file)
             .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
 
+        let diagnostic_uri = uri.clone();
         let diag_params = lsp_types::DocumentDiagnosticParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
             identifier: None,
@@ -129,56 +303,53 @@ impl RustAnalyzerTools {
             partial_result_params: lsp_types::PartialResultParams::default(),
         };
 
-        match self
+        let report = self
             .lsp
             .request::<lsp_types::request::DocumentDiagnosticRequest>(diag_params)
             .await
-        {
-            Ok(report) => {
-                let items = match report {
-                    lsp_types::DocumentDiagnosticReportResult::Report(
-                        lsp_types::DocumentDiagnosticReport::Full(full),
-                    ) => full.full_document_diagnostic_report.items,
-                    lsp_types::DocumentDiagnosticReportResult::Report(
-                        lsp_types::DocumentDiagnosticReport::Unchanged(_),
-                    )
-                    | lsp_types::DocumentDiagnosticReportResult::Partial(_) => vec![],
-                };
+            .map_err(|e| {
+                internal_error(format!(
+                    "diagnostics request failed: {e}. rust-analyzer may still be indexing"
+                ))
+            })?;
 
-                if items.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "No diagnostics found.",
-                    )]));
-                }
+        let items = match report {
+            lsp_types::DocumentDiagnosticReportResult::Report(
+                lsp_types::DocumentDiagnosticReport::Full(full),
+            ) => full.full_document_diagnostic_report.items,
+            lsp_types::DocumentDiagnosticReportResult::Report(
+                lsp_types::DocumentDiagnosticReport::Unchanged(_),
+            )
+            | lsp_types::DocumentDiagnosticReportResult::Partial(_) => vec![],
+        };
 
-                let text = items
-                    .iter()
-                    .map(|d| {
-                        let severity = match d.severity {
-                            Some(lsp_types::DiagnosticSeverity::ERROR) => "ERROR",
-                            Some(lsp_types::DiagnosticSeverity::WARNING) => "WARNING",
-                            Some(lsp_types::DiagnosticSeverity::INFORMATION) => "INFO",
-                            Some(lsp_types::DiagnosticSeverity::HINT) => "HINT",
-                            _ => "UNKNOWN",
-                        };
-                        format!(
-                            "{}:{}: [{}] {}",
-                            d.range.start.line + 1,
-                            d.range.start.character + 1,
-                            severity,
-                            d.message,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+        let diagnostics = items
+            .into_iter()
+            .map(|diagnostic| DiagnosticRecord {
+                severity: diagnostic_severity_name(diagnostic.severity).to_string(),
+                message: diagnostic.message,
+                code: diagnostic.code.map(|code| match code {
+                    lsp_types::NumberOrString::String(value) => value,
+                    lsp_types::NumberOrString::Number(value) => value.to_string(),
+                }),
+                source: diagnostic.source,
+                location: location_record(&diagnostic_uri, &diagnostic.range),
+            })
+            .collect::<Vec<_>>();
 
-                Ok(CallToolResult::success(vec![Content::text(text)]))
-            }
-            Err(e) => Ok(tool_error(format!(
-                "Diagnostics request failed: {e}\n\n\
-                 Note: rust-analyzer may still be loading. Try again in a few seconds."
-            ))),
-        }
+        let diagnostic_count = diagnostics.len();
+        let summary = if diagnostic_count == 0 {
+            format!("No diagnostics found for {file}.")
+        } else {
+            format!("Found {diagnostic_count} diagnostic(s) for {file}.")
+        };
+
+        Ok(Json(DiagnosticsResponse {
+            file_path: file.clone(),
+            diagnostic_count,
+            diagnostics,
+            summary,
+        }))
     }
 
     /// Get type information and documentation at a position.
@@ -186,212 +357,248 @@ impl RustAnalyzerTools {
         name = "rust_hover",
         description = "Get type signature and documentation for a symbol at a specific position in a Rust file."
     )]
-    async fn hover(&self, params: Parameters<PositionParam>) -> Result<CallToolResult, McpError> {
+    async fn hover(
+        &self,
+        params: Parameters<PositionParam>,
+    ) -> Result<Json<HoverResponse>, McpError> {
         let p = &params.0;
         validate_file_path(&p.file_path)?;
 
-        if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
-            return Ok(tool_error(format!("Failed to open file: {e}")));
-        }
+        self.lsp
+            .ensure_file_open(&p.file_path)
+            .await
+            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
 
-        match self.lsp.hover(&p.file_path, p.line, p.character).await {
-            Ok(Some(hover)) => {
-                let text = match hover.contents {
-                    lsp_types::HoverContents::Markup(markup) => markup.value,
-                    lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(s)) => s,
-                    lsp_types::HoverContents::Scalar(lsp_types::MarkedString::LanguageString(
-                        ls,
-                    )) => format!("```{}\n{}\n```", ls.language, ls.value),
-                    lsp_types::HoverContents::Array(items) => items
-                        .into_iter()
-                        .map(|item| match item {
-                            lsp_types::MarkedString::String(s) => s,
-                            lsp_types::MarkedString::LanguageString(ls) => {
-                                format!("```{}\n{}\n```", ls.language, ls.value)
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                };
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+        let requested_position = PositionRecord {
+            line: p.line,
+            character: p.character,
+        };
+        let hover = self
+            .lsp
+            .hover(&p.file_path, p.line, p.character)
+            .await
+            .map_err(|e| internal_error(format!("hover request failed: {e}")))?;
+
+        match hover {
+            Some(hover) => {
+                let contents = markup_to_text(hover.contents);
+                Ok(Json(HoverResponse {
+                    file_path: p.file_path.clone(),
+                    requested_position,
+                    found: true,
+                    range: hover.range.as_ref().map(range_record),
+                    summary: format!("Hover information found for {}.", p.file_path),
+                    contents,
+                }))
             }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No hover information available at this position.",
-            )])),
-            Err(e) => Ok(tool_error(format!("Hover request failed: {e}"))),
+            None => Ok(Json(HoverResponse {
+                file_path: p.file_path.clone(),
+                requested_position,
+                found: false,
+                contents: String::new(),
+                range: None,
+                summary: "No hover information available at this position.".to_string(),
+            })),
         }
     }
 
     /// Find the definition of a symbol.
     #[tool(
         name = "rust_goto_definition",
-        description = "Find where a symbol is defined. Returns the file path and line number of the definition."
+        description = "Find where a symbol is defined. Returns one-based file locations for the definition."
     )]
     async fn goto_definition(
         &self,
         params: Parameters<PositionParam>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<Json<LocationsResponse>, McpError> {
         let p = &params.0;
         validate_file_path(&p.file_path)?;
 
-        if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
-            return Ok(tool_error(format!("Failed to open file: {e}")));
-        }
+        self.lsp
+            .ensure_file_open(&p.file_path)
+            .await
+            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
 
-        match self
+        let response = self
             .lsp
             .goto_definition(&p.file_path, p.line, p.character)
             .await
-        {
-            Ok(Some(response)) => {
-                let locations = match response {
-                    lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
-                    lsp_types::GotoDefinitionResponse::Array(locs) => locs,
-                    lsp_types::GotoDefinitionResponse::Link(links) => links
-                        .into_iter()
-                        .map(|link| lsp_types::Location {
-                            uri: link.target_uri,
-                            range: link.target_selection_range,
-                        })
-                        .collect(),
-                };
+            .map_err(|e| internal_error(format!("go to definition failed: {e}")))?;
 
-                if locations.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "No definition found.",
-                    )]));
-                }
-
-                let text = locations
-                    .iter()
-                    .map(format_location)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+        let locations = match response {
+            Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => {
+                vec![location_record(&location.uri, &location.range)]
             }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No definition found at this position.",
-            )])),
-            Err(e) => Ok(tool_error(format!("Go to definition failed: {e}"))),
-        }
+            Some(lsp_types::GotoDefinitionResponse::Array(locations)) => locations
+                .into_iter()
+                .map(|location| location_record(&location.uri, &location.range))
+                .collect(),
+            Some(lsp_types::GotoDefinitionResponse::Link(links)) => links
+                .into_iter()
+                .map(|link| location_record(&link.target_uri, &link.target_selection_range))
+                .collect(),
+            None => vec![],
+        };
+
+        let found = !locations.is_empty();
+        let location_count = locations.len();
+        let summary = if found {
+            format!("Found {location_count} definition location(s).")
+        } else {
+            "No definition found at this position.".to_string()
+        };
+
+        Ok(Json(LocationsResponse {
+            file_path: p.file_path.clone(),
+            requested_position: PositionRecord {
+                line: p.line,
+                character: p.character,
+            },
+            found,
+            location_count,
+            locations,
+            summary,
+        }))
     }
 
     /// Find all references to a symbol.
     #[tool(
         name = "rust_find_references",
-        description = "Find all references to a symbol at a specific position. Returns a list of file paths and line numbers."
+        description = "Find all references to a symbol at a specific position. Returns one-based file locations."
     )]
     async fn find_references(
         &self,
         params: Parameters<PositionParam>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<Json<LocationsResponse>, McpError> {
         let p = &params.0;
         validate_file_path(&p.file_path)?;
 
-        if let Err(e) = self.lsp.ensure_file_open(&p.file_path).await {
-            return Ok(tool_error(format!("Failed to open file: {e}")));
-        }
+        self.lsp
+            .ensure_file_open(&p.file_path)
+            .await
+            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
 
-        match self
+        let locations = self
             .lsp
             .find_references(&p.file_path, p.line, p.character)
             .await
-        {
-            Ok(Some(locations)) => {
-                if locations.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "No references found.",
-                    )]));
-                }
+            .map_err(|e| internal_error(format!("find references failed: {e}")))?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|location| location_record(&location.uri, &location.range))
+            .collect::<Vec<_>>();
 
-                let text = locations
-                    .iter()
-                    .map(format_location)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let header = format!("Found {} reference(s):\n", locations.len());
-                Ok(CallToolResult::success(vec![Content::text(header + &text)]))
-            }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No references found at this position.",
-            )])),
-            Err(e) => Ok(tool_error(format!("Find references failed: {e}"))),
-        }
+        let found = !locations.is_empty();
+        let location_count = locations.len();
+        let summary = if found {
+            format!("Found {location_count} reference(s).")
+        } else {
+            "No references found at this position.".to_string()
+        };
+
+        Ok(Json(LocationsResponse {
+            file_path: p.file_path.clone(),
+            requested_position: PositionRecord {
+                line: p.line,
+                character: p.character,
+            },
+            found,
+            location_count,
+            locations,
+            summary,
+        }))
     }
 
     /// Search for symbols by name across the workspace.
     #[tool(
         name = "rust_workspace_symbol",
-        description = "Search for symbols (functions, structs, traits, enums, etc.) by name across the entire workspace. Returns locations in file:line:col format (1-based). Useful for navigating without knowing which file a symbol is in."
+        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds."
     )]
     async fn workspace_symbol(
         &self,
         params: Parameters<WorkspaceSymbolParam>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<Json<WorkspaceSymbolsResponse>, McpError> {
         let query = &params.0.query;
-        match self.lsp.workspace_symbols(query.clone()).await {
-            Ok(Some(response)) => {
-                let entries: Vec<(String, lsp_types::Location)> = match response {
-                    lsp_types::WorkspaceSymbolResponse::Flat(symbols) => symbols
-                        .into_iter()
-                        .map(|s| (format!("{:?} {}", s.kind, s.name), s.location))
-                        .collect(),
-                    lsp_types::WorkspaceSymbolResponse::Nested(symbols) => symbols
-                        .into_iter()
-                        .filter_map(|s| {
-                            if let lsp_types::OneOf::Left(loc) = s.location {
-                                Some((format!("{:?} {}", s.kind, s.name), loc))
-                            } else {
-                                None
-                            }
+        let symbols = self
+            .lsp
+            .workspace_symbols(query.clone())
+            .await
+            .map_err(|e| internal_error(format!("workspace symbol search failed: {e}")))?;
+
+        let records = match symbols {
+            Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols)) => symbols
+                .into_iter()
+                .map(|symbol| WorkspaceSymbolRecord {
+                    name: symbol.name,
+                    kind: symbol_kind_name(symbol.kind).to_string(),
+                    container_name: symbol.container_name,
+                    location: location_record(&symbol.location.uri, &symbol.location.range),
+                })
+                .collect(),
+            Some(lsp_types::WorkspaceSymbolResponse::Nested(symbols)) => symbols
+                .into_iter()
+                .filter_map(|symbol| {
+                    if let lsp_types::OneOf::Left(location) = symbol.location {
+                        Some(WorkspaceSymbolRecord {
+                            name: symbol.name,
+                            kind: symbol_kind_name(symbol.kind).to_string(),
+                            container_name: symbol.container_name,
+                            location: location_record(&location.uri, &location.range),
                         })
-                        .collect(),
-                };
-                if entries.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "No symbols found matching {query:?}."
-                    ))]));
-                }
-                let text = entries
-                    .iter()
-                    .map(|(label, loc)| format!("{label} {}", format_location(loc)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let header = format!("Found {} symbol(s) matching {query:?}:\n", entries.len());
-                Ok(CallToolResult::success(vec![Content::text(header + &text)]))
-            }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "No symbols found matching {query:?}."
-            ))])),
-            Err(e) => Ok(tool_error(format!("Workspace symbol search failed: {e}"))),
-        }
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            None => vec![],
+        };
+
+        let symbol_count = records.len();
+        let summary = if symbol_count == 0 {
+            format!("No symbols found matching {query:?}.")
+        } else {
+            format!("Found {symbol_count} symbol(s) matching {query:?}.")
+        };
+
+        Ok(Json(WorkspaceSymbolsResponse {
+            query: query.clone(),
+            symbol_count,
+            symbols: records,
+            summary,
+        }))
     }
 
     /// Return server health and configuration status.
     #[tool(
         name = "rust_server_status",
-        description = "Check rust-analyzer server health and active workspace root. Use this to verify the server is running and analyzing the correct project before running other tools."
+        description = "Check rust-analyzer server health, active workspace root, and shared lspmux bootstrap metadata."
     )]
     async fn server_status(
         &self,
         _params: Parameters<NoParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let alive = self.lsp.is_alive();
-        let workspace = self
-            .lsp
-            .workspace_root()
-            .await
-            .unwrap_or_else(|| "<unknown>".to_string());
-        let version = self
-            .lsp
-            .ra_version()
-            .await
-            .unwrap_or_else(|| "<unknown>".to_string());
+    ) -> Result<Json<ServerStatusResponse>, McpError> {
+        let server_status = if self.lsp.is_alive() {
+            "running"
+        } else {
+            "stopped"
+        };
+        let workspace_root = self.lsp.workspace_root().await;
+        let server_version = self.lsp.server_version().await;
+        let summary = format!(
+            "{SERVER_NAME} is {server_status}; workspace root: {}",
+            workspace_root
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string())
+        );
 
-        let status = if alive { "running" } else { "stopped" };
-        let text =
-            format!("rust-analyzer: {status}\nworkspace root: {workspace}\nversion: {version}");
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(Json(ServerStatusResponse {
+            server: SERVER_NAME.to_string(),
+            server_status: server_status.to_string(),
+            workspace_root,
+            server_version,
+            runtime: self.runtime_status.clone(),
+            summary,
+        }))
     }
 }
 
@@ -434,17 +641,9 @@ mod tests {
 
     #[test]
     fn validate_file_path_accepts_existing_absolute() {
-        // Cargo.toml always exists relative to the manifest dir
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = format!("{manifest}/Cargo.toml");
         assert!(validate_file_path(&path).is_ok());
-    }
-
-    #[test]
-    fn tool_error_sets_is_error_flag() {
-        let result = tool_error("something went wrong");
-        assert_eq!(result.is_error, Some(true));
-        assert_eq!(result.content.len(), 1);
     }
 
     #[test]
@@ -461,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn format_location_one_indexed() {
+    fn location_record_is_one_based() {
         let loc = lsp_types::Location {
             uri: lspmux_cc_mcp::lsp_client::file_uri("/tmp/test.rs").unwrap(),
             range: lsp_types::Range {
@@ -469,8 +668,34 @@ mod tests {
                 end: lsp_types::Position::new(0, 5),
             },
         };
-        let formatted = format_location(&loc);
-        // Should be 1-indexed: line 1, col 1
-        assert_eq!(formatted, "/tmp/test.rs:1:1");
+        let formatted = location_record(&loc.uri, &loc.range);
+        assert_eq!(formatted.display, "/tmp/test.rs:1:1");
+        assert_eq!(formatted.line, 1);
+        assert_eq!(formatted.column, 1);
+    }
+
+    #[test]
+    fn range_record_is_one_based() {
+        let range = lsp_types::Range {
+            start: lsp_types::Position::new(0, 1),
+            end: lsp_types::Position::new(2, 3),
+        };
+        let formatted = range_record(&range);
+        assert_eq!(formatted.start.line, 1);
+        assert_eq!(formatted.start.character, 2);
+        assert_eq!(formatted.end.line, 3);
+        assert_eq!(formatted.end.character, 4);
+    }
+
+    #[test]
+    fn markup_to_text_preserves_language_blocks() {
+        let text = markup_to_text(lsp_types::HoverContents::Scalar(
+            lsp_types::MarkedString::LanguageString(lsp_types::LanguageString {
+                language: "rust".to_string(),
+                value: "fn demo()".to_string(),
+            }),
+        ));
+        assert!(text.contains("```rust"));
+        assert!(text.contains("fn demo()"));
     }
 }

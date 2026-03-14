@@ -1,0 +1,8 @@
+[Unit]
+Description=Update rust-analyzer for lspmux
+
+[Service]
+Type=oneshot
+ExecStart=${UPDATE_SCRIPT}
+StandardOutput=append:${LOG_DIR}/rust-analyzer-update.log
+StandardError=append:${LOG_DIR}/rust-analyzer-update.err

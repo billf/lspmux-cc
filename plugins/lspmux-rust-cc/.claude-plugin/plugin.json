@@ -1,7 +1,7 @@
 {
   "name": "lspmux-rust-cc",
   "version": "0.1.0",
-  "description": "Rust LSP via lspmux - shared rust-analyzer for Claude Code",
+  "description": "Rust LSP via lspmux - shared rust-analyzer service for Claude Code",
   "lspServers": {
     "rust-analyzer": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/lspmux",

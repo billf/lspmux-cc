@@ -1,0 +1,12 @@
+[Unit]
+Description=lspmux shared Rust language service
+
+[Service]
+ExecStart=${LSPMUX_BIN} server --config ${CONFIG_PATH}
+Restart=always
+RestartSec=2
+StandardOutput=append:${LOG_DIR}/lspmux-server.log
+StandardError=append:${LOG_DIR}/lspmux-server.err
+
+[Install]
+WantedBy=default.target
