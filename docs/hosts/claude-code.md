@@ -25,4 +25,8 @@ Set these environment variables on the MCP process if you need explicit paths:
 - `LSPMUX_CONFIG_PATH`
 - `LSPMUX_SOCKET_PATH`
 
-Hooks are optional optimization only. The MCP server rereads files from disk before each request, so tool correctness does not depend on Claude hooks firing.
+Hooks are informational only. They report whether a shared service is already running, but they do not start or manage services.
+
+The Rust MCP runtime is the only bootstrap authority for launchd/systemd/direct fallback behavior. Use `rust_server_status` after MCP startup to confirm bootstrap mode and rust-analyzer readiness.
+
+The MCP server rereads files from disk before each request, so tool correctness does not depend on Claude hooks firing.

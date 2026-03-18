@@ -71,6 +71,16 @@ else
     fail "post-file-edit.sh fails on non-Rust file"
 fi
 
+# --- session-start.sh stays status-only ---
+echo "-- SessionStart behavior --"
+SESSION_START="${PLUGIN_DIR}/hooks/scripts/session-start.sh"
+
+if ! rg -q 'launchctl|systemctl|server &' "${SESSION_START}"; then
+    pass "session-start.sh does not start services directly"
+else
+    fail "session-start.sh still contains bootstrap logic"
+fi
+
 # --- Summary ---
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
