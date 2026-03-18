@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use lsp_types::{
@@ -16,13 +17,17 @@ use lsp_types::{
     InitializedParams, TextDocumentContentChangeEvent, TextDocumentItem, Uri,
     VersionedTextDocumentIdentifier, WorkspaceSymbolParams,
 };
+use metrics::counter;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{timeout, Duration};
+
+use crate::telemetry::ReadinessState;
 
 /// A pending request awaiting its response.
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>;
@@ -50,6 +55,8 @@ pub struct LspClient {
     workspace_root: tokio::sync::Mutex<Option<String>>,
     /// Backend server version (set after LSP initialize handshake).
     server_version: tokio::sync::Mutex<Option<String>>,
+    /// Latest rust-analyzer readiness notification.
+    readiness: Arc<tokio::sync::Mutex<ReadinessState>>,
 }
 
 /// Bytes to percent-encode in file URI paths. Encodes everything except
@@ -173,13 +180,15 @@ impl LspClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let child_stdin = Arc::new(Mutex::new(stdin));
         let alive = Arc::new(AtomicBool::new(true));
+        let readiness = Arc::new(tokio::sync::Mutex::new(ReadinessState::default()));
 
         // Spawn reader task
         let pending_clone = Arc::clone(&pending);
         let alive_clone = Arc::clone(&alive);
+        let readiness_clone = Arc::clone(&readiness);
         tokio::spawn(async move {
             let pending_for_cleanup = Arc::clone(&pending_clone);
-            if let Err(e) = reader_loop(stdout, pending_clone).await {
+            if let Err(e) = reader_loop(stdout, pending_clone, readiness_clone).await {
                 tracing::error!("LSP reader loop error: {e}");
             }
             // Signal that the child process is no longer responsive.
@@ -204,6 +213,7 @@ impl LspClient {
             alive,
             workspace_root: tokio::sync::Mutex::new(None),
             server_version: tokio::sync::Mutex::new(None),
+            readiness,
         };
 
         // Initialize handshake
@@ -215,7 +225,12 @@ impl LspClient {
         #[allow(deprecated)] // root_uri deprecated but still needed
         let init_params = InitializeParams {
             root_uri,
-            capabilities: ClientCapabilities::default(),
+            capabilities: ClientCapabilities {
+                experimental: Some(json!({
+                    "serverStatusNotification": true,
+                })),
+                ..ClientCapabilities::default()
+            },
             ..InitializeParams::default()
         };
 
@@ -461,6 +476,11 @@ impl LspClient {
         self.server_version.lock().await.clone()
     }
 
+    /// The latest rust-analyzer readiness snapshot.
+    pub async fn readiness(&self) -> ReadinessState {
+        self.readiness.lock().await.clone()
+    }
+
     /// Search for symbols matching `query` across the workspace.
     ///
     /// Returns `None` if the server returned no results, or the response
@@ -529,7 +549,11 @@ fn text_doc_position(
 }
 
 /// Read LSP JSON-RPC messages from stdout and dispatch responses to pending requests.
-async fn reader_loop(stdout: tokio::process::ChildStdout, pending: PendingMap) -> Result<()> {
+async fn reader_loop(
+    stdout: tokio::process::ChildStdout,
+    pending: PendingMap,
+    readiness: Arc<tokio::sync::Mutex<ReadinessState>>,
+) -> Result<()> {
     let mut reader = BufReader::new(stdout);
 
     loop {
@@ -574,9 +598,80 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: PendingMap) -
         } else {
             // It's a notification from the server (e.g., diagnostics)
             let method = msg.get("method").and_then(Value::as_str).unwrap_or("?");
+            if method == "experimental/serverStatus" {
+                if let Some(params) = msg.get("params") {
+                    handle_server_status_notification(&readiness, params).await?;
+                }
+            }
             tracing::debug!("LSP notification: {method}");
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerStatusParams {
+    health: ServerHealth,
+    quiescent: bool,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ServerHealth {
+    Ok,
+    Warning,
+    Error,
+}
+
+impl ServerHealth {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+}
+
+async fn handle_server_status_notification(
+    readiness: &Arc<tokio::sync::Mutex<ReadinessState>>,
+    params: &Value,
+) -> Result<()> {
+    let status: ServerStatusParams =
+        serde_json::from_value(params.clone()).context("invalid server status notification")?;
+    let next_state = ReadinessState {
+        health: status.health.as_str().to_string(),
+        quiescent: Some(status.quiescent),
+        message: status.message,
+        updated_at_ms: now_unix_ms(),
+    };
+
+    let mut guard = readiness.lock().await;
+    let changed = *guard != next_state;
+    *guard = next_state.clone();
+    drop(guard);
+
+    if changed {
+        counter!(
+            "lspmux_cc_ra_status_transitions_total",
+            "health" => next_state.health.clone()
+        )
+        .increment(1);
+        tracing::info!(
+            event = "ra_readiness_transition",
+            health = %next_state.health,
+            quiescent = ?next_state.quiescent,
+            message = ?next_state.message
+        );
+    }
+
+    Ok(())
+}
+
+fn now_unix_ms() -> Option<u64> {
+    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(elapsed.as_millis()).ok()
 }
 
 #[cfg(test)]
@@ -699,6 +794,7 @@ mod tests {
             alive: Arc::new(AtomicBool::new(false)),
             workspace_root: tokio::sync::Mutex::new(None),
             server_version: tokio::sync::Mutex::new(None),
+            readiness: Arc::new(tokio::sync::Mutex::new(ReadinessState::default())),
         };
 
         let err = client.request::<lsp_types::request::Shutdown>(()).await;
@@ -709,5 +805,26 @@ mod tests {
             let mut child = client.child.lock().await;
             let _ = child.kill().await;
         }
+    }
+
+    #[tokio::test]
+    async fn server_status_notification_updates_readiness() {
+        let readiness = Arc::new(tokio::sync::Mutex::new(ReadinessState::default()));
+        handle_server_status_notification(
+            &readiness,
+            &serde_json::json!({
+                "health": "warning",
+                "quiescent": false,
+                "message": "indexing"
+            }),
+        )
+        .await
+        .unwrap();
+
+        let snapshot = readiness.lock().await.clone();
+        assert_eq!(snapshot.health, "warning");
+        assert_eq!(snapshot.quiescent, Some(false));
+        assert_eq!(snapshot.message.as_deref(), Some("indexing"));
+        assert!(snapshot.updated_at_ms.is_some());
     }
 }

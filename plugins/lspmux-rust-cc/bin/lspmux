@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Wrapper to locate the lspmux binary installed by cargo.
 
+export LSPMUX_CLIENT_KIND="${LSPMUX_CLIENT_KIND:-claude_lsp}"
+export LSPMUX_CLIENT_HOST="${LSPMUX_CLIENT_HOST:-claude}"
+export LSPMUX_SESSION_ID="${LSPMUX_SESSION_ID:-claude-lsp-$$-$(date +%s)}"
+
 if [ -n "${LSPMUX_PATH:-}" ] && [ -x "${LSPMUX_PATH}" ]; then
     LSPMUX_BIN="${LSPMUX_PATH}"
 elif command -v lspmux >/dev/null 2>&1; then

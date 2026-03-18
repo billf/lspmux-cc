@@ -2,4 +2,14 @@ instance_timeout = 300
 gc_interval = 10
 listen = "${SOCKET_PATH}"
 connect = "${SOCKET_PATH}"
-pass_environment = ["CARGO_HOME", "RUSTUP_HOME", "PATH", "HOME", "USER"]
+pass_environment = [
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "PATH",
+  "HOME",
+  "USER",
+  "WORKSPACE_ROOT",
+  "LSPMUX_CLIENT_KIND",
+  "LSPMUX_CLIENT_HOST",
+  "LSPMUX_SESSION_ID",
+]

@@ -28,9 +28,9 @@ pub enum BootstrapMode {
 }
 
 impl BootstrapMode {
-    fn parse(raw: Option<String>) -> Result<Self> {
-        match raw.as_deref() {
-            None | Some("") | Some("auto") => Ok(Self::Auto),
+    fn parse(raw: Option<&str>) -> Result<Self> {
+        match raw {
+            None | Some("" | "auto") => Ok(Self::Auto),
             Some("require") => Ok(Self::Require),
             Some("off") => Ok(Self::Off),
             Some(other) => {
@@ -74,6 +74,10 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     /// Discover runtime configuration from environment variables and platform defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if environment-controlled bootstrap mode is invalid.
     pub fn discover() -> Result<Self> {
         let base_dirs = BaseDirs::new();
         let home = home_dir_string(base_dirs.as_ref());
@@ -104,9 +108,8 @@ impl RuntimeConfig {
                 .and_then(|path| path.to_str().map(ToOwned::to_owned))
         });
 
-        let config_path = std::env::var("LSPMUX_CONFIG_PATH").unwrap_or_else(|_| {
-            default_config_path(base_dirs.as_ref(), &home)
-        });
+        let config_path = std::env::var("LSPMUX_CONFIG_PATH")
+            .unwrap_or_else(|_| default_config_path(base_dirs.as_ref(), &home));
         let socket_path = std::env::var("LSPMUX_SOCKET_PATH").unwrap_or_else(|_| {
             default_socket_path(
                 std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
@@ -114,7 +117,8 @@ impl RuntimeConfig {
                 std::env::var("TMPDIR").ok().as_deref(),
             )
         });
-        let bootstrap_mode = BootstrapMode::parse(std::env::var("LSPMUX_BOOTSTRAP").ok())?;
+        let bootstrap_mode =
+            BootstrapMode::parse(std::env::var("LSPMUX_BOOTSTRAP").ok().as_deref())?;
 
         Ok(Self {
             lspmux_path,
@@ -127,6 +131,11 @@ impl RuntimeConfig {
     }
 
     /// Ensure the shared lspmux service is available according to the bootstrap policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if prerequisites are missing or the configured bootstrap policy
+    /// cannot make the shared service available.
     pub async fn ensure_service_running(&self) -> Result<RuntimeStatus> {
         self.validate_prerequisites()?;
 
@@ -152,7 +161,7 @@ impl RuntimeConfig {
             );
         }
 
-        self.start_direct_server().await?;
+        self.start_direct_server()?;
         if self.wait_for_socket().await {
             return Ok(self.runtime_status(ServiceMode::StartedDirectly));
         }
@@ -246,7 +255,7 @@ impl RuntimeConfig {
         Ok(false)
     }
 
-    async fn start_direct_server(&self) -> Result<()> {
+    fn start_direct_server(&self) -> Result<()> {
         let mut command = Command::new(&self.lspmux_path);
         command
             .arg("server")
@@ -263,7 +272,8 @@ impl RuntimeConfig {
 
     fn is_default_config_path(&self) -> bool {
         let base_dirs = BaseDirs::new();
-        self.config_path == default_config_path(base_dirs.as_ref(), &home_dir_string(base_dirs.as_ref()))
+        self.config_path
+            == default_config_path(base_dirs.as_ref(), &home_dir_string(base_dirs.as_ref()))
     }
 }
 
@@ -367,7 +377,7 @@ mod tests {
 
     #[test]
     fn bootstrap_mode_rejects_unknown_values() {
-        assert!(BootstrapMode::parse(Some("weird".to_string())).is_err());
+        assert!(BootstrapMode::parse(Some("weird")).is_err());
     }
 
     #[test]

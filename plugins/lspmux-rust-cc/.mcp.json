@@ -3,7 +3,9 @@
     "lspmux-rust-analyzer": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/lspmux-cc-mcp",
       "env": {
-        "RUST_ANALYZER_PATH": "${CLAUDE_PLUGIN_ROOT}/bin/rust-analyzer"
+        "RUST_ANALYZER_PATH": "${CLAUDE_PLUGIN_ROOT}/bin/rust-analyzer",
+        "LSPMUX_CLIENT_KIND": "claude_mcp",
+        "LSPMUX_CLIENT_HOST": "claude"
       }
     }
   }

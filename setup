@@ -165,6 +165,9 @@ Set these environment variables for the MCP process:
   RUST_ANALYZER_PATH=${RA_BINARY}
   LSPMUX_CONFIG_PATH=${LSPMUX_CONFIG_PATH}
   LSPMUX_SOCKET_PATH=${LSPMUX_SOCKET_PATH}
+  LSPMUX_CLIENT_KIND=codex_mcp
+  LSPMUX_CLIENT_HOST=codex
+  LSPMUX_SESSION_ID=codex-\$(date +%s)-\$$
 
 Launch the MCP server with:
   ${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp

@@ -2,3 +2,4 @@
 
 pub mod bootstrap;
 pub mod lsp_client;
+pub mod telemetry;

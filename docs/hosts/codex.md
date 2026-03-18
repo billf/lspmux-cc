@@ -20,6 +20,9 @@ export LSPMUX_PATH="$HOME/.cargo/bin/lspmux"
 export RUST_ANALYZER_PATH="$HOME/.local/share/lspmux-rust-analyzer/current/rust-analyzer"
 export LSPMUX_CONFIG_PATH="$HOME/.config/lspmux/config.toml"
 export LSPMUX_SOCKET_PATH="${TMPDIR:-/tmp}/lspmux/lspmux.sock"
+export LSPMUX_CLIENT_KIND="codex_mcp"
+export LSPMUX_CLIENT_HOST="codex"
+export LSPMUX_SESSION_ID="codex-$(date +%s)-$$"
 ```
 
 On macOS, the default `LSPMUX_CONFIG_PATH` is:

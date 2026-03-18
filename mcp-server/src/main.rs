@@ -8,10 +8,12 @@
 mod tools;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use lspmux_cc_mcp::bootstrap::{RuntimeConfig, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::LspClient;
+use lspmux_cc_mcp::telemetry::TelemetryState;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo, ToolsCapability,
 };
@@ -52,7 +54,7 @@ impl ServerHandler for LspmuxMcpServer {
                  using as input to another tool.\n\
                  \n\
                  Workflow: run rust_diagnostics after edits to check for errors. If results\n\
-                 seem stale, wait 2-3 seconds and retry while rust-analyzer finishes indexing.\n\
+                 seem stale, use rust_server_status to check readiness instead of guessing.\n\
                  All file paths must be absolute. Tools are read-only and workspace-scoped.\n\
                  Use rust_server_status to confirm the correct workspace root and shared-service \
                  bootstrap state."
@@ -109,10 +111,41 @@ async fn main() -> Result<()> {
     tracing::info!("lspmux binary: {}", runtime.lspmux_path);
     tracing::info!("{SERVER_NAME} binary: {}", runtime.server_path);
 
-    let runtime_status = runtime
-        .ensure_service_running()
-        .await
-        .context("failed to prepare shared lspmux service")?;
+    let telemetry = TelemetryState::from_env();
+    tracing::info!(
+        event = "client_identity",
+        client_kind = %telemetry.client_identity().kind,
+        client_host = %telemetry.client_identity().host,
+        session_id = %telemetry.client_identity().session_id
+    );
+
+    let bootstrap_started = Instant::now();
+    let runtime_status = match runtime.ensure_service_running().await {
+        Ok(status) => {
+            telemetry.record_bootstrap_success(match status.service_mode {
+                lspmux_cc_mcp::bootstrap::ServiceMode::Reused => "reused",
+                lspmux_cc_mcp::bootstrap::ServiceMode::StartedViaManager => "started_via_manager",
+                lspmux_cc_mcp::bootstrap::ServiceMode::StartedDirectly => "started_directly",
+                lspmux_cc_mcp::bootstrap::ServiceMode::Skipped => "skipped",
+            });
+            tracing::info!(
+                event = "bootstrap_result",
+                service_mode = ?status.service_mode,
+                latency_ms = bootstrap_started.elapsed().as_millis()
+            );
+            status
+        }
+        Err(error) => {
+            telemetry.record_bootstrap_failure("prepare_service", &error.to_string());
+            tracing::error!(
+                event = "bootstrap_result",
+                outcome = "failure",
+                error = %error,
+                latency_ms = bootstrap_started.elapsed().as_millis()
+            );
+            return Err(error).context("failed to prepare shared lspmux service");
+        }
+    };
 
     // Initialize LSP client
     let lsp = LspClient::new(
@@ -124,7 +157,7 @@ async fn main() -> Result<()> {
     .context("failed to initialize LSP client")?;
 
     let lsp = Arc::new(lsp);
-    let tools = RustAnalyzerTools::new(Arc::clone(&lsp), runtime_status);
+    let tools = RustAnalyzerTools::new(Arc::clone(&lsp), runtime_status, telemetry);
     let server = LspmuxMcpServer { tools };
 
     // Start MCP server on stdio

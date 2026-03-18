@@ -16,6 +16,9 @@ Any MCP-capable host can use `lspmux-cc-mcp` directly.
 - `RUST_ANALYZER_PATH`
 - `LSPMUX_CONFIG_PATH`
 - `LSPMUX_SOCKET_PATH`
+- `LSPMUX_CLIENT_KIND`
+- `LSPMUX_CLIENT_HOST`
+- `LSPMUX_SESSION_ID`
 
 `LSPMUX_BOOTSTRAP=auto` is the default and will reuse the shared service when available, then fall back to a direct foreground `lspmux server` process if no managed user service is ready.
 

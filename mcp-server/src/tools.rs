@@ -10,11 +10,12 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ListToolsResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorCode, ListToolsResult};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, ErrorData as McpError, Json, RoleServer};
 use schemars::JsonSchema;
@@ -22,6 +23,10 @@ use serde::{Deserialize, Serialize};
 
 use lspmux_cc_mcp::bootstrap::{RuntimeStatus, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::{file_uri, uri_to_path, LspClient};
+use lspmux_cc_mcp::telemetry::{
+    ClientIdentity, CompilerAccountingSnapshot, ReadinessState, TelemetrySnapshot, TelemetryState,
+    ToolOutcome,
+};
 
 /// Validate that a file path is absolute and exists on disk.
 ///
@@ -47,7 +52,7 @@ fn internal_error(msg: impl Into<String>) -> McpError {
     McpError::internal_error(msg.into(), None)
 }
 
-fn diagnostic_severity_name(severity: Option<lsp_types::DiagnosticSeverity>) -> &'static str {
+const fn diagnostic_severity_name(severity: Option<lsp_types::DiagnosticSeverity>) -> &'static str {
     match severity {
         Some(lsp_types::DiagnosticSeverity::ERROR) => "error",
         Some(lsp_types::DiagnosticSeverity::WARNING) => "warning",
@@ -57,7 +62,7 @@ fn diagnostic_severity_name(severity: Option<lsp_types::DiagnosticSeverity>) -> 
     }
 }
 
-fn symbol_kind_name(kind: lsp_types::SymbolKind) -> &'static str {
+const fn symbol_kind_name(kind: lsp_types::SymbolKind) -> &'static str {
     match kind {
         lsp_types::SymbolKind::FILE => "file",
         lsp_types::SymbolKind::MODULE => "module",
@@ -221,6 +226,10 @@ pub struct ServerStatusResponse {
     pub workspace_root: Option<String>,
     pub server_version: Option<String>,
     pub runtime: RuntimeStatus,
+    pub client: ClientIdentity,
+    pub readiness: ReadinessState,
+    pub telemetry: TelemetrySnapshot,
+    pub compiler_accounting: CompilerAccountingSnapshot,
     pub summary: String,
 }
 
@@ -242,7 +251,7 @@ fn location_record(uri: &lsp_types::Uri, range: &lsp_types::Range) -> LocationRe
     }
 }
 
-fn range_record(range: &lsp_types::Range) -> RangeRecord {
+const fn range_record(range: &lsp_types::Range) -> RangeRecord {
     RangeRecord {
         start: PositionRecord {
             line: range.start.line + 1,
@@ -260,16 +269,22 @@ fn range_record(range: &lsp_types::Range) -> RangeRecord {
 pub struct RustAnalyzerTools {
     lsp: Arc<LspClient>,
     runtime_status: RuntimeStatus,
+    telemetry: TelemetryState,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl RustAnalyzerTools {
     /// Create a new tools instance wrapping an LSP client.
-    pub fn new(lsp: Arc<LspClient>, runtime_status: RuntimeStatus) -> Self {
+    pub fn new(
+        lsp: Arc<LspClient>,
+        runtime_status: RuntimeStatus,
+        telemetry: TelemetryState,
+    ) -> Self {
         Self {
             lsp,
             runtime_status,
+            telemetry,
             tool_router: Self::tool_router(),
         }
     }
@@ -584,8 +599,15 @@ impl RustAnalyzerTools {
         };
         let workspace_root = self.lsp.workspace_root().await;
         let server_version = self.lsp.server_version().await;
+        self.telemetry
+            .refresh_compiler_accounting(workspace_root.as_deref());
+        let readiness = self.lsp.readiness().await;
+        let telemetry = self.telemetry.snapshot();
+        let client = self.telemetry.client_identity();
+        let compiler_accounting = self.telemetry.compiler_accounting_snapshot();
         let summary = format!(
-            "{SERVER_NAME} is {server_status}; workspace root: {}",
+            "{SERVER_NAME} is {server_status}; readiness: {}; workspace root: {}",
+            readiness.health,
             workspace_root
                 .clone()
                 .unwrap_or_else(|| "<unknown>".to_string())
@@ -597,6 +619,10 @@ impl RustAnalyzerTools {
             workspace_root,
             server_version,
             runtime: self.runtime_status.clone(),
+            client,
+            readiness,
+            telemetry,
+            compiler_accounting,
             summary,
         }))
     }
@@ -618,8 +644,86 @@ impl RustAnalyzerTools {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let tool_name = request.name.clone();
+        let client = self.telemetry.client_identity();
+        let started = Instant::now();
+        tracing::info!(
+            event = "tool_start",
+            tool = %tool_name,
+            client_kind = %client.kind,
+            client_host = %client.host,
+            session_id = %client.session_id
+        );
         let ctx = ToolCallContext::new(self, request, context);
-        self.tool_router.call(ctx).await
+        let result = self.tool_router.call(ctx).await;
+        let latency_ms = started.elapsed().as_millis();
+        let latency_ms_u64 = u64::try_from(latency_ms).unwrap_or(u64::MAX);
+
+        match &result {
+            Ok(_) => {
+                self.telemetry.record_tool_result(
+                    &tool_name,
+                    ToolOutcome::Success,
+                    latency_ms_u64,
+                    None,
+                    None,
+                );
+                tracing::info!(
+                    event = "tool_result",
+                    tool = %tool_name,
+                    outcome = "success",
+                    latency_ms = latency_ms
+                );
+                if tool_name != "rust_server_status" {
+                    let workspace_root = self.lsp.workspace_root().await;
+                    self.telemetry
+                        .refresh_compiler_accounting(workspace_root.as_deref());
+                }
+            }
+            Err(error) => {
+                let outcome = classify_tool_error(error);
+                self.telemetry.record_tool_result(
+                    &tool_name,
+                    outcome,
+                    latency_ms_u64,
+                    Some(error_code_name(error.code)),
+                    Some(&error.message),
+                );
+                tracing::warn!(
+                    event = "tool_result",
+                    tool = %tool_name,
+                    outcome = %outcome.as_str(),
+                    error_code = ?error.code,
+                    error = %error.message,
+                    latency_ms = latency_ms
+                );
+            }
+        }
+
+        result
+    }
+}
+
+fn classify_tool_error(error: &McpError) -> ToolOutcome {
+    if error.code == ErrorCode::INVALID_PARAMS {
+        ToolOutcome::InvalidParams
+    } else if error.message.contains("timed out") {
+        ToolOutcome::Timeout
+    } else {
+        ToolOutcome::Failure
+    }
+}
+
+const fn error_code_name(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::PARSE_ERROR => "parse_error",
+        ErrorCode::INVALID_REQUEST => "invalid_request",
+        ErrorCode::METHOD_NOT_FOUND => "method_not_found",
+        ErrorCode::INVALID_PARAMS => "invalid_params",
+        ErrorCode::INTERNAL_ERROR => "internal_error",
+        ErrorCode::RESOURCE_NOT_FOUND => "resource_not_found",
+        ErrorCode::URL_ELICITATION_REQUIRED => "url_elicitation_required",
+        _ => "other",
     }
 }
 
