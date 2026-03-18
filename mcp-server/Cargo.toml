@@ -17,6 +17,9 @@ percent-encoding = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 which = "8.0.2"
+directories = "5"
+metrics = "0.24"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

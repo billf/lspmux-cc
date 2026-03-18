@@ -1,8 +1,12 @@
 //! Runtime bootstrap and service discovery for the shared lspmux service.
 
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use directories::BaseDirs;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -71,17 +75,13 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     /// Discover runtime configuration from environment variables and platform defaults.
     pub fn discover() -> Result<Self> {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let base_dirs = BaseDirs::new();
+        let home = home_dir_string(base_dirs.as_ref());
         let lspmux_path = std::env::var("LSPMUX_PATH").unwrap_or_else(|_| {
             which::which("lspmux").map_or_else(
                 |_| {
-                    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-                        if home.is_empty() {
-                            ".cargo".to_string()
-                        } else {
-                            format!("{home}/.cargo")
-                        }
-                    });
+                    let cargo_home =
+                        std::env::var("CARGO_HOME").unwrap_or_else(|_| cargo_home_path(&home));
                     format!("{cargo_home}/bin/lspmux")
                 },
                 |path| path.to_string_lossy().into_owned(),
@@ -93,13 +93,8 @@ impl RuntimeConfig {
                 return path.to_string_lossy().into_owned();
             }
 
-            let xdg_data_home = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-                if home.is_empty() {
-                    ".local/share".to_string()
-                } else {
-                    format!("{home}/.local/share")
-                }
-            });
+            let xdg_data_home =
+                std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| xdg_data_home_path(&home));
             format!("{xdg_data_home}/lspmux-rust-analyzer/current/{SERVER_NAME}")
         });
 
@@ -110,11 +105,12 @@ impl RuntimeConfig {
         });
 
         let config_path = std::env::var("LSPMUX_CONFIG_PATH").unwrap_or_else(|_| {
-            default_config_path(&home, std::env::var("XDG_CONFIG_HOME").ok().as_deref())
+            default_config_path(base_dirs.as_ref(), &home)
         });
         let socket_path = std::env::var("LSPMUX_SOCKET_PATH").unwrap_or_else(|_| {
             default_socket_path(
                 std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+                base_dirs.as_ref(),
                 std::env::var("TMPDIR").ok().as_deref(),
             )
         });
@@ -201,7 +197,7 @@ impl RuntimeConfig {
     }
 
     fn socket_ready(&self) -> bool {
-        Path::new(&self.socket_path).exists()
+        socket_is_ready(&self.socket_path)
     }
 
     async fn wait_for_socket(&self) -> bool {
@@ -266,28 +262,62 @@ impl RuntimeConfig {
     }
 
     fn is_default_config_path(&self) -> bool {
-        let home = std::env::var("HOME").unwrap_or_default();
-        self.config_path
-            == default_config_path(&home, std::env::var("XDG_CONFIG_HOME").ok().as_deref())
+        let base_dirs = BaseDirs::new();
+        self.config_path == default_config_path(base_dirs.as_ref(), &home_dir_string(base_dirs.as_ref()))
+    }
+}
+
+fn home_dir_string(base_dirs: Option<&BaseDirs>) -> String {
+    base_dirs.map_or_else(
+        || std::env::var("HOME").unwrap_or_default(),
+        |dirs| dirs.home_dir().to_string_lossy().into_owned(),
+    )
+}
+
+fn cargo_home_path(home: &str) -> String {
+    if home.is_empty() {
+        ".cargo".to_string()
+    } else {
+        format!("{home}/.cargo")
+    }
+}
+
+fn xdg_data_home_path(home: &str) -> String {
+    if home.is_empty() {
+        ".local/share".to_string()
+    } else {
+        format!("{home}/.local/share")
     }
 }
 
 fn nix_like_uid() -> u32 {
-    std::env::var("UID")
-        .ok()
-        .and_then(|raw| raw.parse().ok())
-        .unwrap_or(0)
+    #[cfg(unix)]
+    {
+        // SAFETY: `getuid` is a side-effect-free libc call.
+        unsafe { libc::getuid() }
+    }
+
+    #[cfg(not(unix))]
+    {
+        0
+    }
 }
 
-fn default_config_path(home: &str, xdg_config_home: Option<&str>) -> String {
+fn default_config_path(base_dirs: Option<&BaseDirs>, home: &str) -> String {
     if cfg!(target_os = "macos") {
-        PathBuf::from(home)
-            .join("Library/Application Support/lspmux/config.toml")
+        let config_root = base_dirs.map_or_else(
+            || PathBuf::from(home).join("Library/Application Support"),
+            |dirs| dirs.config_dir().to_path_buf(),
+        );
+        config_root
+            .join("lspmux/config.toml")
             .to_string_lossy()
             .into_owned()
     } else {
-        let root = xdg_config_home
+        let root = std::env::var("XDG_CONFIG_HOME")
+            .ok()
             .map(PathBuf::from)
+            .or_else(|| base_dirs.map(|dirs| dirs.config_dir().to_path_buf()))
             .unwrap_or_else(|| PathBuf::from(home).join(".config"));
         root.join("lspmux/config.toml")
             .to_string_lossy()
@@ -295,14 +325,35 @@ fn default_config_path(home: &str, xdg_config_home: Option<&str>) -> String {
     }
 }
 
-fn default_socket_path(xdg_runtime_dir: Option<&str>, tmpdir: Option<&str>) -> String {
+fn default_socket_path(
+    xdg_runtime_dir: Option<&str>,
+    base_dirs: Option<&BaseDirs>,
+    tmpdir: Option<&str>,
+) -> String {
     let base = xdg_runtime_dir
         .map(PathBuf::from)
+        .or_else(|| base_dirs.and_then(|dirs| dirs.runtime_dir().map(PathBuf::from)))
         .or_else(|| tmpdir.map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     base.join("lspmux/lspmux.sock")
         .to_string_lossy()
         .into_owned()
+}
+
+fn socket_is_ready(path: &str) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+
+    #[cfg(unix)]
+    {
+        metadata.file_type().is_socket()
+    }
+
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
 }
 
 #[cfg(test)]
@@ -321,26 +372,26 @@ mod tests {
 
     #[test]
     fn default_socket_path_prefers_runtime_dir() {
-        let path = default_socket_path(Some("/run/user/123"), Some("/tmp/custom"));
+        let path = default_socket_path(Some("/run/user/123"), None, Some("/tmp/custom"));
         assert_eq!(path, "/run/user/123/lspmux/lspmux.sock");
     }
 
     #[test]
     fn default_socket_path_falls_back_to_tmpdir() {
-        let path = default_socket_path(None, Some("/tmp/custom"));
+        let path = default_socket_path(None, None, Some("/tmp/custom"));
         assert_eq!(path, "/tmp/custom/lspmux/lspmux.sock");
     }
 
     #[test]
     fn default_config_path_uses_platform_convention() {
-        let path = default_config_path("/home/test", Some("/xdg/config"));
+        let path = default_config_path(None, "/home/test");
         if cfg!(target_os = "macos") {
             assert_eq!(
                 path,
                 "/home/test/Library/Application Support/lspmux/config.toml"
             );
         } else {
-            assert_eq!(path, "/xdg/config/lspmux/config.toml");
+            assert_eq!(path, "/home/test/.config/lspmux/config.toml");
         }
     }
 }
