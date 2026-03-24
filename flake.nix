@@ -30,7 +30,8 @@
         let
           craneLib = crane.mkLib pkgs;
 
-          rust-analyzer-nightly = fenix.packages.${system}.rust-analyzer;
+          rust-analyzer = fenix.packages.${system}.rust-analyzer;
+          rust-analyzer-nightly = rust-analyzer;
 
           mcpServerSrc = craneLib.cleanCargoSource ./mcp-server;
 
@@ -47,7 +48,7 @@
         in
         {
           overlayAttrs = {
-            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer-nightly;
+            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer rust-analyzer-nightly;
           };
 
           packages = {
@@ -63,7 +64,7 @@
               ];
               meta.mainProgram = "lspmux";
             };
-            inherit rust-analyzer-nightly;
+            inherit rust-analyzer rust-analyzer-nightly;
             default = self'.packages.lspmux-cc-mcp;
           };
 
@@ -83,7 +84,7 @@
             packages = [
               # Rust
               pkgs.rustc pkgs.cargo pkgs.clippy pkgs.rustfmt
-              rust-analyzer-nightly
+              self'.packages.rust-analyzer
               self'.packages.lspmux
               # Shell script deps
               pkgs.curl pkgs.jq
