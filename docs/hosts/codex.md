@@ -47,3 +47,32 @@ The MCP tool contract is intentionally Rust-specific and stable:
 - `rust_find_references`
 - `rust_workspace_symbol`
 - `rust_server_status`
+
+## Native TOML Configuration
+
+Codex uses TOML config files, not `.mcp.json`. You can configure lspmux-cc directly in Codex's config instead of using environment variables.
+
+**User-level:** `~/.codex/config.toml`
+**Project-level:** `.codex/config.toml`
+
+```toml
+[mcp_servers.lspmux-rust-analyzer]
+command = "/absolute/path/to/lspmux-cc/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp"
+args = []
+
+[mcp_servers.lspmux-rust-analyzer.env]
+WORKSPACE_ROOT = "/absolute/path/to/workspace"
+LSPMUX_BOOTSTRAP = "auto"
+LSPMUX_CLIENT_KIND = "codex_mcp"
+LSPMUX_CLIENT_HOST = "codex"
+```
+
+Replace paths with your actual install locations.
+
+## Sandbox Modes
+
+Codex supports three sandbox modes: `read-only`, `workspace-write`, and `danger-full-access`.
+
+For lspmux-cc, use `workspace-write`. The MCP server needs to read Rust source files in the workspace but doesn't write anything. `read-only` works too, since the MCP server only reads files and communicates over the Unix socket.
+
+Codex doesn't support LSP plugins. Only the 6 MCP tools are available.

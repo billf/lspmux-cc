@@ -63,12 +63,15 @@ All file paths must be absolute.
 
 ```sh
 ./setup core
+./setup sandbox claude-code
 claude plugin add-marketplace /absolute/path/to/lspmux-cc
 claude plugin disable rust-analyzer-lsp --scope user
 claude plugin install lspmux-rust-cc --scope user
 ```
 
-The plugin registers both an LSP server (for Claude's native Rust support) and an MCP server (for agent tool access). See `docs/hosts/claude-code.md`.
+`./setup core` starts the shared service outside the sandbox. Claude Code's macOS seatbelt sandbox blocks Unix socket `connect()` by default, so `./setup sandbox claude-code` adds the socket path to `allowUnixSockets` in `~/.claude/settings.json`. Without this, both MCP and LSP connections fail silently.
+
+The plugin registers both an LSP server (for Claude's native Rust support) and an MCP server (for agent tool access). See `docs/hosts/claude-code.md` for the full connection story, troubleshooting, and subagent behavior.
 
 ### Codex
 
