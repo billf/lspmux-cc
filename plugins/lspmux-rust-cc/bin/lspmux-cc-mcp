@@ -6,6 +6,14 @@ set -euo pipefail
 CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 MCP_BIN="${CARGO_HOME}/bin/lspmux-cc-mcp"
 
+: "${LSPMUX_CLIENT_KIND:=claude_mcp}"
+: "${LSPMUX_CLIENT_HOST:=claude}"
+: "${LSPMUX_SESSION_ID:=claude-mcp-$$-$(date +%s)}"
+
+export LSPMUX_CLIENT_KIND
+export LSPMUX_CLIENT_HOST
+export LSPMUX_SESSION_ID
+
 # Try nix result first, then cargo install location
 if [ ! -x "${MCP_BIN}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
