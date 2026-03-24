@@ -18,12 +18,12 @@ if ! [ -x "${LSPMUX_BIN}" ]; then
 fi
 
 if [ "${BOOTSTRAP_MODE}" = "off" ]; then
-    printf '{"systemMessage": "lspmux bootstrap disabled (LSPMUX_BOOTSTRAP=off). Workspace: %s"}\n' "${WS}"
+    jq -n --arg ws "${WS}" '{"systemMessage": "lspmux bootstrap disabled (LSPMUX_BOOTSTRAP=off). Workspace: \($ws)"}'
     exit 0
 fi
 
 if check_running; then
-    printf '{"systemMessage": "Shared lspmux rust-analyzer service is already running. Workspace: %s\\nCheck rust_server_status after MCP startup for bootstrap mode and readiness."}\n' "${WS}"
+    jq -n --arg ws "${WS}" '{"systemMessage": "Shared lspmux rust-analyzer service is already running. Workspace: \($ws)\nCheck rust_server_status after MCP startup for bootstrap mode and readiness."}'
     exit 0
 fi
 
@@ -32,5 +32,5 @@ if [ "${BOOTSTRAP_MODE}" = "require" ]; then
     exit 2
 fi
 
-printf '{"systemMessage": "Shared lspmux rust-analyzer service is not running yet. Workspace: %s\\nThe MCP runtime will handle bootstrap on first use. Check rust_server_status after startup for bootstrap mode and readiness."}\n' "${WS}"
+jq -n --arg ws "${WS}" '{"systemMessage": "Shared lspmux rust-analyzer service is not running yet. Workspace: \($ws)\nThe MCP runtime will handle bootstrap on first use. Check rust_server_status after startup for bootstrap mode and readiness."}'
 exit 0
