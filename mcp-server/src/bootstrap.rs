@@ -450,7 +450,10 @@ mod tests {
             Some("/nix/store/pinned-rust-analyzer/bin/rust-analyzer".to_string()),
             Some(PathBuf::from("/usr/bin/rust-analyzer")),
         );
-        assert_eq!(resolved, "/nix/store/pinned-rust-analyzer/bin/rust-analyzer");
+        assert_eq!(
+            resolved,
+            "/nix/store/pinned-rust-analyzer/bin/rust-analyzer"
+        );
     }
 
     #[test]

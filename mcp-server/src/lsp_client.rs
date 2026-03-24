@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use lsp_types::{
@@ -27,7 +26,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{timeout, Duration};
 
-use crate::telemetry::ReadinessState;
+use crate::telemetry::{now_unix_ms, ReadinessState};
 
 /// A pending request awaiting its response.
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>;
@@ -667,11 +666,6 @@ async fn handle_server_status_notification(
     }
 
     Ok(())
-}
-
-fn now_unix_ms() -> Option<u64> {
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
-    u64::try_from(elapsed.as_millis()).ok()
 }
 
 #[cfg(test)]

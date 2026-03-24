@@ -367,11 +367,11 @@ fn file_modified_ms(path: &Path) -> Option<u64> {
     system_time_ms(modified)
 }
 
-fn now_unix_ms() -> Option<u64> {
+pub(crate) fn now_unix_ms() -> Option<u64> {
     system_time_ms(SystemTime::now())
 }
 
-fn system_time_ms(time: SystemTime) -> Option<u64> {
+pub(crate) fn system_time_ms(time: SystemTime) -> Option<u64> {
     let elapsed = time.duration_since(UNIX_EPOCH).ok()?;
     u64::try_from(elapsed.as_millis()).ok()
 }
