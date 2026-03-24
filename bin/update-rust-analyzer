@@ -37,6 +37,13 @@ if [ -z "${DOWNLOAD_URL}" ] || [ "${DOWNLOAD_URL}" = "null" ]; then
     exit 1
 fi
 
+CHECKSUMS_URL="$(echo "${RELEASE_JSON}" | jq -r '.assets[] | select(.name == "SHA256SUMS") | .browser_download_url')"
+
+if [ -z "${CHECKSUMS_URL}" ] || [ "${CHECKSUMS_URL}" = "null" ]; then
+    echo "error: no checksum asset found for rust-analyzer release ${TAG}" >&2
+    exit 1
+fi
+
 VERSION_DIR="${RA_BIN_DIR}/${TAG}"
 RA_BINARY="${VERSION_DIR}/rust-analyzer"
 
@@ -67,9 +74,21 @@ else
 
     chmod +x "${TMPFILE}"
 
-    # Record SHA256 for audit trail
     CHECKSUM="$(shasum -a 256 "${TMPFILE}" | cut -d' ' -f1)"
-    echo "SHA256: ${CHECKSUM}"
+    curl --proto =https --fail --silent --show-error --max-redirs 5 -L "${CHECKSUMS_URL}" -o "${TMPFILE}.sums"
+
+    EXPECTED_CHECKSUM="$(awk -v asset="${ASSET_NAME}" '$2 == asset || $2 == "*" asset {print $1; exit}' "${TMPFILE}.sums")"
+    if [ -z "${EXPECTED_CHECKSUM}" ]; then
+        echo "error: no checksum found for ${ASSET_NAME} in release checksum asset" >&2
+        exit 1
+    fi
+
+    if [ "${CHECKSUM}" != "${EXPECTED_CHECKSUM}" ]; then
+        echo "error: checksum mismatch for ${ASSET_NAME}" >&2
+        echo "expected: ${EXPECTED_CHECKSUM}" >&2
+        echo "actual:   ${CHECKSUM}" >&2
+        exit 1
+    fi
 
     mv "${TMPFILE}" "${RA_BINARY}"
     echo "${CHECKSUM}  rust-analyzer" > "${VERSION_DIR}/SHA256SUM"
