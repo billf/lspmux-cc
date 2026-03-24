@@ -6,15 +6,15 @@
 
 ## 2. Prerequisites
 
-Run `./setup core` **before** installing the Claude Code plugin. The setup script installs `lspmux`, downloads `rust-analyzer`, writes the config, and registers the launchd (macOS) or systemd (Linux) service.
+Run `./setup core` **before** installing the Claude Code plugin. The setup script installs `lspmux` if needed, validates that `rust-analyzer` is already available via `RUST_ANALYZER_PATH` or `PATH`, writes the config, and registers the launchd (macOS) or systemd (Linux) service.
 
 The launchd/systemd service **must already be running** when Claude Code starts. Claude Code's sandbox blocks child processes from calling `launchctl bootstrap` or `systemctl --user start`, so the MCP server can't start the service on your behalf if it isn't already up.
 
 Required tools on `$PATH`:
 
-- `curl` (rust-analyzer download)
 - `jq` (hook JSON output)
 - `cargo` (lspmux install, MCP server build)
+- `rust-analyzer` unless you launch Claude from an environment that sets `RUST_ANALYZER_PATH`
 
 Verify everything with `./setup doctor`. It checks binaries, config, socket, and service unit presence.
 
@@ -167,7 +167,7 @@ Three layers, from outside Claude Code to inside it.
 
 This checks:
 - lspmux binary exists and is executable
-- rust-analyzer binary exists and is executable
+- rust-analyzer is available via `RUST_ANALYZER_PATH` or `PATH`
 - Config file is present
 - Unix socket exists and is connectable
 - launchd/systemd unit is installed
@@ -228,7 +228,7 @@ You can restrict tools via `disallowedTools` in Claude Code's configuration if n
 | `WORKSPACE_ROOT` | Current working directory | Absolute path to the project root. The MCP server uses this for rust-analyzer workspace initialization. Auto-set by Claude Code's process environment. |
 | `LSPMUX_BOOTSTRAP` | `auto` | Bootstrap policy. `auto`: reuse service if available, fall back to direct spawn. `require`: fail if no service running. `off`: skip service bootstrap entirely. Overridable. |
 | `LSPMUX_PATH` | `lspmux` on `$PATH`, then `$CARGO_HOME/bin/lspmux` | Path to the lspmux binary. Overridable. |
-| `RUST_ANALYZER_PATH` | `rust-analyzer` on `$PATH`, then `$XDG_DATA_HOME/lspmux-rust-analyzer/current/rust-analyzer` | Path to the rust-analyzer binary. Overridable. |
+| `RUST_ANALYZER_PATH` | unset | Preferred explicit path to the rust-analyzer binary. If unset, the wrappers fall back to `rust-analyzer` on `$PATH`. |
 | `LSPMUX_CONFIG_PATH` | `~/Library/Application Support/lspmux/config.toml` (macOS), `$XDG_CONFIG_HOME/lspmux/config.toml` (Linux) | Path to the lspmux TOML config file. Overridable. |
 | `LSPMUX_SOCKET_PATH` | `$TMPDIR/lspmux/lspmux.sock` (macOS), `$XDG_RUNTIME_DIR/lspmux/lspmux.sock` (Linux) | Unix socket path for client-server communication. Overridable. Must match the `listen` value in lspmux config. |
 | `LSPMUX_CLIENT_KIND` | `claude_mcp` (MCP wrapper), `claude_lsp` (LSP wrapper) | Identifies the client type in telemetry and logs. Auto-set by the bin wrappers. |

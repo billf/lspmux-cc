@@ -115,5 +115,5 @@ No way to get the structure of a single file. `rust_workspace_symbol` searches b
 ### 2026-03-24 - Current state
 
 - `mcp-server/src/bootstrap.rs` now uses `libc::getuid()` and Unix socket type checks; added regression tests to keep those bootstrap invariants in place.
-- `bin/update-rust-analyzer` now verifies the release `SHA256SUMS` asset before installing a download and fails closed on checksum mismatch or missing download/checksum metadata.
-- The original P1 bootstrap/security gaps are now tracked as implemented behavior; the remaining entries in this file are architectural follow-ups rather than the original critical defect class.
+- The repository no longer downloads or updates `rust-analyzer` itself. Provisioning is now environment-driven: `RUST_ANALYZER_PATH` first, then `rust-analyzer` on `PATH`, with the flake-exported package intended as the reproducible Nix source of truth.
+- The original P1 bootstrap/security gaps are now tracked as resolved by removing the repo-managed download path; the remaining entries in this file are architectural follow-ups rather than the original critical defect class.

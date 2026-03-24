@@ -214,4 +214,5 @@ Macro-heavy Rust code is hard to reason about. RA's `rust-analyzer/expandMacro` 
 
 - `mcp-server/src/bootstrap.rs` already checks socket readiness by socket type rather than path existence, and `nix_like_uid()` already uses the OS uid directly.
 - Regression tests now pin those bootstrap invariants so the stale security guidance in this review is less likely to regress.
+- `rust-analyzer` provisioning is no longer handled by `bin/update-rust-analyzer`; the runtime now expects `RUST_ANALYZER_PATH` or `rust-analyzer` on `PATH`, with the flake export providing the pinned Nix path.
 - The remaining items in this file are the broader bootstrap-race and LSP-transport follow-ups that are intentionally outside Task 1.

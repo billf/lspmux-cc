@@ -9,6 +9,9 @@ Codex uses `lspmux-cc` as a plain MCP server. Editors can keep using native LSP 
 ./setup host codex
 ```
 
+`./setup core` validates that `rust-analyzer` is already available through
+`RUST_ANALYZER_PATH` or `PATH`; it does not download the binary.
+
 ## Runtime Contract
 
 Export these variables for the MCP process:
@@ -17,13 +20,17 @@ Export these variables for the MCP process:
 export WORKSPACE_ROOT=/absolute/path/to/workspace
 export LSPMUX_BOOTSTRAP=auto
 export LSPMUX_PATH="$HOME/.cargo/bin/lspmux"
-export RUST_ANALYZER_PATH="$HOME/.local/share/lspmux-rust-analyzer/current/rust-analyzer"
+export RUST_ANALYZER_PATH="$(command -v rust-analyzer)"
 export LSPMUX_CONFIG_PATH="$HOME/.config/lspmux/config.toml"
 export LSPMUX_SOCKET_PATH="${TMPDIR:-/tmp}/lspmux/lspmux.sock"
 export LSPMUX_CLIENT_KIND="codex_mcp"
 export LSPMUX_CLIENT_HOST="codex"
 export LSPMUX_SESSION_ID="codex-$(date +%s)-$$"
 ```
+
+For reproducible Nix setups, prefer exporting `RUST_ANALYZER_PATH` from this
+flake's pinned package, for example via `nix build .#rust-analyzer` or a dev
+shell/Home Manager environment that places the binary on `PATH`.
 
 On macOS, the default `LSPMUX_CONFIG_PATH` is:
 

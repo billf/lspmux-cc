@@ -6,7 +6,7 @@ Any MCP-capable host can use `lspmux-cc-mcp` directly.
 
 - A user-level `lspmux` service installed via `./setup core`
 - A `WORKSPACE_ROOT` pointing at the active Rust workspace
-- Access to the `rust-analyzer` binary managed by `bin/update-rust-analyzer`
+- `rust-analyzer` available via `RUST_ANALYZER_PATH` or on `PATH`
 
 ## Environment Contract
 
