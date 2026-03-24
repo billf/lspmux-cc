@@ -371,6 +371,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn socket_is_ready_returns_false_for_missing_path() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let missing = tempdir.path().join("missing.sock");
+        assert!(!socket_is_ready(missing.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nix_like_uid_matches_os_uid() {
+        assert_eq!(nix_like_uid(), unsafe { libc::getuid() });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_is_ready_detects_unix_socket() {
+        use std::os::unix::net::UnixListener;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let socket_path = tempdir.path().join("lspmux.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+
+        assert!(socket_is_ready(socket_path.to_str().unwrap()));
+    }
+
+    #[test]
     fn bootstrap_mode_defaults_to_auto() {
         assert_eq!(BootstrapMode::parse(None).unwrap(), BootstrapMode::Auto);
     }
