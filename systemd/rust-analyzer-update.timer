@@ -1,9 +1,0 @@
-[Unit]
-Description=Daily rust-analyzer update timer for lspmux
-
-[Timer]
-OnCalendar=*-*-* 04:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
