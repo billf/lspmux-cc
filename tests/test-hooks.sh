@@ -178,7 +178,7 @@ fi
 
 # --- session-start.sh stays status-only ---
 echo "-- SessionStart behavior --"
-if ! rg -q 'launchctl|systemctl|server &' "${SESSION_START}"; then
+if ! grep -qE 'launchctl|systemctl|server &' "${SESSION_START}"; then
     pass "session-start.sh does not start services directly"
 else
     fail "session-start.sh still contains bootstrap logic"

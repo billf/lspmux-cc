@@ -79,7 +79,7 @@ fi
 
 # --- No downloader fallback ---
 echo "-- Rust analyzer provisioning contract --"
-if ! rg -q 'update-rust-analyzer|lspmux-rust-analyzer/current|result-rust-analyzer-nightly' \
+if ! grep -qE 'update-rust-analyzer|lspmux-rust-analyzer/current|result-rust-analyzer-nightly' \
     "${SCRIPT_DIR}/setup" \
     "${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/rust-analyzer" \
     "${SCRIPT_DIR}/docs/hosts/codex.md" \
