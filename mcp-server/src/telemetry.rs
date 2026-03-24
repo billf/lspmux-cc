@@ -43,6 +43,7 @@ pub struct BootstrapTelemetry {
     pub failure_count: u64,
     pub last_outcome: Option<String>,
     pub last_error: Option<String>,
+    pub last_latency_ms: Option<u64>,
     pub updated_at_ms: Option<u64>,
 }
 
@@ -152,13 +153,14 @@ impl TelemetryState {
         self.client.clone()
     }
 
-    pub fn record_bootstrap_success(&self, service_mode: &str) {
+    pub fn record_bootstrap_success(&self, service_mode: &str, latency_ms: u64) {
         let updated_at_ms = now_unix_ms();
         {
             let mut inner = self.write_inner();
             inner.bootstrap.success_count += 1;
             inner.bootstrap.last_outcome = Some(service_mode.to_string());
             inner.bootstrap.last_error = None;
+            inner.bootstrap.last_latency_ms = Some(latency_ms);
             inner.bootstrap.updated_at_ms = updated_at_ms;
         }
 
@@ -169,13 +171,14 @@ impl TelemetryState {
         .increment(1);
     }
 
-    pub fn record_bootstrap_failure(&self, stage: &str, error: &str) {
+    pub fn record_bootstrap_failure(&self, stage: &str, error: &str, latency_ms: u64) {
         let updated_at_ms = now_unix_ms();
         {
             let mut inner = self.write_inner();
             inner.bootstrap.failure_count += 1;
             inner.bootstrap.last_outcome = Some("failed".to_string());
             inner.bootstrap.last_error = Some(error.to_string());
+            inner.bootstrap.last_latency_ms = Some(latency_ms);
             inner.bootstrap.updated_at_ms = updated_at_ms;
         }
 
@@ -435,5 +438,26 @@ not-json
         assert_eq!(tool.failure_count, 1);
         assert_eq!(tool.last_error.as_deref(), Some("boom"));
         assert_eq!(tool.last_error_code.as_deref(), Some("internal_error"));
+    }
+
+    #[test]
+    fn bootstrap_result_updates_snapshot_latency() {
+        let telemetry = TelemetryState::from_env();
+
+        telemetry.record_bootstrap_success("reused", 12);
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.bootstrap.success_count, 1);
+        assert_eq!(snapshot.bootstrap.failure_count, 0);
+        assert_eq!(snapshot.bootstrap.last_outcome.as_deref(), Some("reused"));
+        assert_eq!(snapshot.bootstrap.last_latency_ms, Some(12));
+        assert_eq!(snapshot.bootstrap.last_error.as_deref(), None);
+
+        telemetry.record_bootstrap_failure("prepare_service", "boom", 34);
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.bootstrap.success_count, 1);
+        assert_eq!(snapshot.bootstrap.failure_count, 1);
+        assert_eq!(snapshot.bootstrap.last_outcome.as_deref(), Some("failed"));
+        assert_eq!(snapshot.bootstrap.last_latency_ms, Some(34));
+        assert_eq!(snapshot.bootstrap.last_error.as_deref(), Some("boom"));
     }
 }

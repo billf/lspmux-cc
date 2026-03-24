@@ -586,7 +586,7 @@ impl RustAnalyzerTools {
     /// Return server health and configuration status.
     #[tool(
         name = "rust_server_status",
-        description = "Check rust-analyzer server health, active workspace root, and shared lspmux bootstrap metadata."
+        description = "Check rust-analyzer liveness, readiness, active workspace root, and shared lspmux bootstrap metadata."
     )]
     async fn server_status(
         &self,
@@ -606,7 +606,7 @@ impl RustAnalyzerTools {
         let client = self.telemetry.client_identity();
         let compiler_accounting = self.telemetry.compiler_accounting_snapshot();
         let summary = format!(
-            "{SERVER_NAME} is {server_status}; readiness: {}; workspace root: {}",
+            "{SERVER_NAME} liveness: {server_status}; readiness: {}; workspace root: {}",
             readiness.health,
             workspace_root
                 .clone()

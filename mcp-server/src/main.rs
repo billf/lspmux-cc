@@ -122,26 +122,39 @@ async fn main() -> Result<()> {
     let bootstrap_started = Instant::now();
     let runtime_status = match runtime.ensure_service_running().await {
         Ok(status) => {
-            telemetry.record_bootstrap_success(match status.service_mode {
-                lspmux_cc_mcp::bootstrap::ServiceMode::Reused => "reused",
-                lspmux_cc_mcp::bootstrap::ServiceMode::StartedViaManager => "started_via_manager",
-                lspmux_cc_mcp::bootstrap::ServiceMode::StartedDirectly => "started_directly",
-                lspmux_cc_mcp::bootstrap::ServiceMode::Skipped => "skipped",
-            });
+            let bootstrap_latency_ms =
+                u64::try_from(bootstrap_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            telemetry.record_bootstrap_success(
+                match status.service_mode {
+                    lspmux_cc_mcp::bootstrap::ServiceMode::Reused => "reused",
+                    lspmux_cc_mcp::bootstrap::ServiceMode::StartedViaManager => {
+                        "started_via_manager"
+                    }
+                    lspmux_cc_mcp::bootstrap::ServiceMode::StartedDirectly => "started_directly",
+                    lspmux_cc_mcp::bootstrap::ServiceMode::Skipped => "skipped",
+                },
+                bootstrap_latency_ms,
+            );
             tracing::info!(
                 event = "bootstrap_result",
                 service_mode = ?status.service_mode,
-                latency_ms = bootstrap_started.elapsed().as_millis()
+                latency_ms = bootstrap_latency_ms
             );
             status
         }
         Err(error) => {
-            telemetry.record_bootstrap_failure("prepare_service", &error.to_string());
+            let bootstrap_latency_ms =
+                u64::try_from(bootstrap_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            telemetry.record_bootstrap_failure(
+                "prepare_service",
+                &error.to_string(),
+                bootstrap_latency_ms,
+            );
             tracing::error!(
                 event = "bootstrap_result",
                 outcome = "failure",
                 error = %error,
-                latency_ms = bootstrap_started.elapsed().as_millis()
+                latency_ms = bootstrap_latency_ms
             );
             return Err(error).context("failed to prepare shared lspmux service");
         }
