@@ -3,6 +3,8 @@
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -357,7 +359,7 @@ fn socket_is_ready(path: &str) -> bool {
 
     #[cfg(unix)]
     {
-        metadata.file_type().is_socket()
+        metadata.file_type().is_socket() && UnixStream::connect(path).is_ok()
     }
 
     #[cfg(not(unix))]
@@ -393,6 +395,22 @@ mod tests {
         let _listener = UnixListener::bind(&socket_path).unwrap();
 
         assert!(socket_is_ready(socket_path.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_ready_requires_connectable() {
+        use std::os::unix::net::UnixListener;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let socket_path = tempdir.path().join("stale.sock");
+
+        // Bind a listener to create the socket file, then drop it immediately.
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        drop(listener);
+
+        // The socket file still exists on disk but nobody is listening.
+        assert!(!socket_is_ready(socket_path.to_str().unwrap()));
     }
 
     #[test]
