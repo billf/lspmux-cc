@@ -94,15 +94,10 @@ impl RuntimeConfig {
             )
         });
 
-        let server_path = std::env::var("RUST_ANALYZER_PATH").unwrap_or_else(|_| {
-            if let Ok(path) = which::which(SERVER_NAME) {
-                return path.to_string_lossy().into_owned();
-            }
-
-            let xdg_data_home =
-                std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| xdg_data_home_path(&home));
-            format!("{xdg_data_home}/lspmux-rust-analyzer/current/{SERVER_NAME}")
-        });
+        let server_path = resolve_server_path(
+            std::env::var("RUST_ANALYZER_PATH").ok(),
+            which::which(SERVER_NAME).ok(),
+        );
 
         let workspace_root = std::env::var("WORKSPACE_ROOT").ok().or_else(|| {
             std::env::current_dir()
@@ -294,14 +289,6 @@ fn cargo_home_path(home: &str) -> String {
     }
 }
 
-fn xdg_data_home_path(home: &str) -> String {
-    if home.is_empty() {
-        ".local/share".to_string()
-    } else {
-        format!("{home}/.local/share")
-    }
-}
-
 fn nix_like_uid() -> u32 {
     #[cfg(unix)]
     {
@@ -350,6 +337,15 @@ fn default_socket_path(
     base.join("lspmux/lspmux.sock")
         .to_string_lossy()
         .into_owned()
+}
+
+fn resolve_server_path(configured_path: Option<String>, path_lookup: Option<PathBuf>) -> String {
+    configured_path.unwrap_or_else(|| {
+        path_lookup.map_or_else(
+            || SERVER_NAME.to_string(),
+            |path| path.to_string_lossy().into_owned(),
+        )
+    })
 }
 
 fn socket_is_ready(path: &str) -> bool {
@@ -446,5 +442,29 @@ mod tests {
         } else {
             assert_eq!(path, "/home/test/.config/lspmux/config.toml");
         }
+    }
+
+    #[test]
+    fn resolve_server_path_prefers_explicit_env() {
+        let resolved = resolve_server_path(
+            Some("/nix/store/pinned-rust-analyzer/bin/rust-analyzer".to_string()),
+            Some(PathBuf::from("/usr/bin/rust-analyzer")),
+        );
+        assert_eq!(resolved, "/nix/store/pinned-rust-analyzer/bin/rust-analyzer");
+    }
+
+    #[test]
+    fn resolve_server_path_uses_path_lookup_when_env_missing() {
+        let resolved = resolve_server_path(
+            None,
+            Some(PathBuf::from("/run/current-system/sw/bin/rust-analyzer")),
+        );
+        assert_eq!(resolved, "/run/current-system/sw/bin/rust-analyzer");
+    }
+
+    #[test]
+    fn resolve_server_path_falls_back_to_binary_name() {
+        let resolved = resolve_server_path(None, None);
+        assert_eq!(resolved, SERVER_NAME);
     }
 }

@@ -4,30 +4,17 @@ set -euo pipefail
 # Wrapper to locate the rust-analyzer binary.
 # Priority:
 #   1. RUST_ANALYZER_PATH env var (explicit override)
-#   2. Nix flake result (nix build .#rust-analyzer-nightly)
-#   3. Manual install via update-rust-analyzer
+#   2. rust-analyzer on PATH
 
 if [ -n "${RUST_ANALYZER_PATH:-}" ] && [ -x "${RUST_ANALYZER_PATH}" ]; then
     exec "${RUST_ANALYZER_PATH}" "$@"
 fi
 
-# Check for Nix-built binary in the project's result symlink
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="${SCRIPT_DIR}/../../.."
-NIX_RA="${PROJECT_ROOT}/result-rust-analyzer-nightly/bin/rust-analyzer"
-if [ -x "${NIX_RA}" ]; then
-    exec "${NIX_RA}" "$@"
-fi
-
-# Fall back to manually-downloaded binary
-XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-RA_CURRENT="${XDG_DATA_HOME}/lspmux-rust-analyzer/current/rust-analyzer"
-
-if [ -x "${RA_CURRENT}" ]; then
-    exec "${RA_CURRENT}" "$@"
+if command -v rust-analyzer >/dev/null 2>&1; then
+    exec rust-analyzer "$@"
 fi
 
 echo "error: rust-analyzer not found" >&2
-echo "Install via: nix build .#rust-analyzer-nightly --out-link result-rust-analyzer-nightly" >&2
-echo "Or run: bin/update-rust-analyzer" >&2
+echo "Set RUST_ANALYZER_PATH or add rust-analyzer to PATH." >&2
+echo "Nix example: nix build .#rust-analyzer" >&2
 exit 1
