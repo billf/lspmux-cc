@@ -3,6 +3,8 @@ set -euo pipefail
 
 # Wrapper to locate the lspmux binary installed by cargo.
 
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
 export LSPMUX_CLIENT_KIND="${LSPMUX_CLIENT_KIND:-claude_lsp}"
 export LSPMUX_CLIENT_HOST="${LSPMUX_CLIENT_HOST:-claude}"
 export LSPMUX_SESSION_ID="${LSPMUX_SESSION_ID:-claude-lsp-$$-$(date +%s)}"
@@ -17,10 +19,9 @@ else
 fi
 
 if [ ! -x "${LSPMUX_BIN}" ]; then
-    echo "error: lspmux not found" >&2
-    echo "Install via: cargo install --locked lspmux" >&2
-    echo "Or set LSPMUX_PATH to the binary location" >&2
-    exit 1
+    printf '%s\n' "Install via: cargo install --locked lspmux" >&2
+    printf '%s\n' "Or set LSPMUX_PATH to the binary location" >&2
+    die "lspmux not found"
 fi
 
 exec "${LSPMUX_BIN}" "$@"

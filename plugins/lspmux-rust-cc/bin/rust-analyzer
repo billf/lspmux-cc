@@ -6,6 +6,8 @@ set -euo pipefail
 #   1. RUST_ANALYZER_PATH env var (explicit override)
 #   2. rust-analyzer on PATH
 
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
 if [ -n "${RUST_ANALYZER_PATH:-}" ] && [ -x "${RUST_ANALYZER_PATH}" ]; then
     exec "${RUST_ANALYZER_PATH}" "$@"
 fi
@@ -14,7 +16,6 @@ if command -v rust-analyzer >/dev/null 2>&1; then
     exec rust-analyzer "$@"
 fi
 
-echo "error: rust-analyzer not found" >&2
-echo "Set RUST_ANALYZER_PATH or add rust-analyzer to PATH." >&2
-echo "Nix example: nix build .#rust-analyzer" >&2
-exit 1
+printf '%s\n' "Set RUST_ANALYZER_PATH or add rust-analyzer to PATH." >&2
+printf '%s\n' "Nix example: nix build .#rust-analyzer" >&2
+die "rust-analyzer not found"
