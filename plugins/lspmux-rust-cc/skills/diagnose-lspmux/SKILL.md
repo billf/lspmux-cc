@@ -2,7 +2,7 @@
 name: diagnose-lspmux
 description: Diagnose lspmux rust-analyzer connection issues. Use when MCP tools fail, rust_server_status shows errors, or rust-analyzer seems unresponsive.
 disable-model-invocation: true
-allowed-tools: Read, Bash(./setup *), lspmux-rust-analyzer:rust_server_status, lspmux-rust-analyzer:rust_diagnostics
+allowed-tools: Read, Bash(./setup doctor), lspmux-rust-analyzer:rust_server_status, lspmux-rust-analyzer:rust_diagnostics
 ---
 
 # Diagnose lspmux
@@ -52,6 +52,13 @@ lspmux diagnostic report
 ```
 
 For any `[fail]` item, include the specific remediation command.
+
+**Note:** `./setup core` and `./setup sandbox claude-code` require filesystem and network access that Claude Code's sandbox blocks. Ask the user to run these outside the sandbox:
+
+```
+./setup core
+./setup sandbox claude-code
+```
 
 ## Reference
 
