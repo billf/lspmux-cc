@@ -141,12 +141,25 @@ cmd_host_claude_code() {
     cat <<EOF
 Claude Code host adapter
 
-1. Install the marketplace entry:
-   claude plugin add-marketplace ${SCRIPT_DIR}
-2. Disable Claude's built-in rust-analyzer:
-   claude plugin disable rust-analyzer-lsp --scope user
-3. Install the lspmux Rust plugin:
-   claude plugin install lspmux-rust-cc --scope user
+Prerequisites:
+  1. Run core setup first (starts the shared service outside the sandbox):
+     ./setup core
+
+  2. Configure the sandbox to allow Unix socket access:
+     ./setup sandbox claude-code
+     (or manually add "${LSPMUX_SOCKET_PATH}" to
+      sandbox.network.allowUnixSockets in ~/.claude/settings.json)
+
+Install:
+  3. Register the marketplace entry:
+     claude plugin add-marketplace ${SCRIPT_DIR}
+  4. Disable Claude's built-in rust-analyzer:
+     claude plugin disable rust-analyzer-lsp --scope user
+  5. Install the lspmux Rust plugin:
+     claude plugin install lspmux-rust-cc --scope user
+
+Verify:
+  ./setup doctor
 
 Reference: ${SCRIPT_DIR}/docs/hosts/claude-code.md
 EOF
@@ -187,6 +200,46 @@ Reference: ${SCRIPT_DIR}/docs/hosts/generic-mcp.md
 EOF
 }
 
+cmd_sandbox_claude_code() {
+    local settings_file="${HOME_DIR}/.claude/settings.json"
+    local socket_path="${LSPMUX_SOCKET_PATH}"
+
+    info "Configuring Claude Code sandbox for lspmux..."
+
+    if ! command -v jq >/dev/null 2>&1; then
+        die "jq is required for sandbox configuration"
+    fi
+
+    # Create settings file if missing
+    if [ ! -f "${settings_file}" ]; then
+        mkdir -p "$(dirname "${settings_file}")"
+        echo '{}' > "${settings_file}"
+        info "Created ${settings_file}"
+    fi
+
+    # Check if allowAllUnixSockets is true (warn against it)
+    if jq -e '.sandbox.network.allowAllUnixSockets == true' "${settings_file}" >/dev/null 2>&1; then
+        warn "allowAllUnixSockets is true in ${settings_file}"
+        warn "This exposes Docker, SSH agent, and other daemon sockets to the sandbox."
+        warn "Consider replacing with specific socket paths."
+    fi
+
+    # Check if socket path already present
+    if jq -e --arg path "${socket_path}" '.sandbox.network.allowUnixSockets // [] | index($path) != null' "${settings_file}" >/dev/null 2>&1; then
+        info "Socket path already in allowUnixSockets: ${socket_path}"
+        return 0
+    fi
+
+    # Add socket path to allowUnixSockets
+    local tmp_file
+    tmp_file="$(mktemp)"
+    jq --arg path "${socket_path}" '
+        .sandbox.network.allowUnixSockets = ((.sandbox.network.allowUnixSockets // []) + [$path])
+    ' "${settings_file}" > "${tmp_file}" && mv "${tmp_file}" "${settings_file}"
+
+    info "Added ${socket_path} to allowUnixSockets in ${settings_file}"
+}
+
 cmd_doctor() {
     ensure_supported_platform
 
@@ -197,46 +250,98 @@ cmd_doctor() {
     echo "  socket: ${LSPMUX_SOCKET_PATH}"
 
     if command -v lspmux >/dev/null 2>&1; then
-        echo "  lspmux: $(command -v lspmux)"
+        echo "  [ok] lspmux: $(command -v lspmux)"
     else
-        echo "  lspmux: missing"
+        echo "  [!!] lspmux: missing"
         failures=$((failures + 1))
     fi
 
     if [ -x "${RA_BINARY}" ]; then
-        echo "  rust-analyzer: ${RA_BINARY}"
+        echo "  [ok] rust-analyzer: ${RA_BINARY}"
     else
-        echo "  rust-analyzer: missing (${RA_BINARY})"
+        echo "  [!!] rust-analyzer: missing (${RA_BINARY})"
         failures=$((failures + 1))
     fi
 
     if [ -f "${LSPMUX_CONFIG_PATH}" ]; then
-        echo "  config file: present"
+        echo "  [ok] config file: present"
     else
-        echo "  config file: missing"
+        echo "  [!!] config file: missing"
         failures=$((failures + 1))
     fi
 
     if [ -S "${LSPMUX_SOCKET_PATH}" ]; then
-        echo "  shared socket: ready"
+        echo "  [ok] shared socket: ready"
     else
-        echo "  shared socket: not ready"
+        echo "  [!!] shared socket: not ready"
         failures=$((failures + 1))
     fi
 
     if [ "${OS}" = "Darwin" ]; then
         if [ -f "${LAUNCHD_DIR}/com.lspmux.server.plist" ]; then
-            echo "  launchd unit: present"
+            echo "  [ok] launchd unit: present"
         else
-            echo "  launchd unit: missing"
+            echo "  [!!] launchd unit: missing"
             failures=$((failures + 1))
         fi
     else
         if [ -f "${SYSTEMD_USER_DIR}/lspmux.service" ]; then
-            echo "  systemd unit: present"
+            echo "  [ok] systemd unit: present"
         else
-            echo "  systemd unit: missing"
+            echo "  [!!] systemd unit: missing"
             failures=$((failures + 1))
+        fi
+    fi
+
+    # Claude Code checks (optional)
+    if command -v claude >/dev/null 2>&1; then
+        echo
+        echo "  Claude Code integration:"
+
+        # Check plugin installed
+        if claude plugin list 2>/dev/null | grep -q "lspmux-rust-cc"; then
+            echo "  [ok] lspmux-rust-cc plugin installed"
+        else
+            echo "  [!!] lspmux-rust-cc plugin not installed"
+            failures=$((failures + 1))
+        fi
+
+        # Check built-in rust-analyzer disabled
+        if claude plugin list 2>/dev/null | grep -q "rust-analyzer-lsp.*enabled"; then
+            echo "  [!!] built-in rust-analyzer-lsp is still enabled"
+            failures=$((failures + 1))
+        else
+            echo "  [ok] built-in rust-analyzer-lsp disabled (or not present)"
+        fi
+
+        # Check allowUnixSockets
+        local settings_file="${HOME_DIR}/.claude/settings.json"
+        if [ -f "${settings_file}" ]; then
+            if jq -e --arg path "${LSPMUX_SOCKET_PATH}" '.sandbox.network.allowUnixSockets // [] | index($path) != null' "${settings_file}" >/dev/null 2>&1; then
+                echo "  [ok] socket path in allowUnixSockets"
+            elif jq -e '.sandbox.network.allowAllUnixSockets == true' "${settings_file}" >/dev/null 2>&1; then
+                echo "  [!!] allowAllUnixSockets is true (insecure; use specific paths)"
+            else
+                echo "  [!!] socket path not in allowUnixSockets"
+                echo "       run: ./setup sandbox claude-code"
+                failures=$((failures + 1))
+            fi
+        else
+            echo "  [--] ~/.claude/settings.json not found (skipping sandbox check)"
+        fi
+    else
+        echo
+        echo "  [--] claude CLI not found (skipping Claude Code checks)"
+    fi
+
+    # Socket directory permissions
+    if [ -d "${LSPMUX_SOCKET_DIR}" ]; then
+        local perms
+        perms="$(stat -f '%Lp' "${LSPMUX_SOCKET_DIR}" 2>/dev/null || stat -c '%a' "${LSPMUX_SOCKET_DIR}" 2>/dev/null || echo "unknown")"
+        if [ "${perms}" = "700" ]; then
+            echo "  [ok] socket directory permissions: ${perms}"
+        else
+            echo "  [!!] socket directory permissions: ${perms} (expected 700)"
         fi
     fi
 
@@ -250,6 +355,7 @@ Usage:
   ./setup host claude-code
   ./setup host codex
   ./setup host generic-mcp
+  ./setup sandbox claude-code
   ./setup doctor
 
 Running ./setup with no arguments is equivalent to:
@@ -275,6 +381,12 @@ main() {
                 codex) cmd_host_codex ;;
                 generic-mcp) cmd_host_generic_mcp ;;
                 *) die "unknown host adapter: ${2:-<missing>}" ;;
+            esac
+            ;;
+        sandbox)
+            case "${2:-}" in
+                claude-code) cmd_sandbox_claude_code ;;
+                *) die "unknown sandbox target: ${2:-<missing>}" ;;
             esac
             ;;
         doctor)
