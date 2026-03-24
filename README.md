@@ -32,7 +32,7 @@ cargo install --path mcp-server
 ./setup core
 ```
 
-`./setup core` installs lspmux, downloads rust-analyzer, writes the config, and deploys the launchd (macOS) or systemd (Linux) service.
+`./setup core` installs lspmux, validates rust-analyzer is on PATH (or `RUST_ANALYZER_PATH`), writes the config, and deploys the launchd service.
 
 For Nix users: `nix build` builds everything from the flake.
 
@@ -103,7 +103,6 @@ Works with any MCP-capable host. See `docs/hosts/generic-mcp.md`.
 ## Project Layout
 
 ```
-bin/                          # rust-analyzer updater
 config/                       # lspmux.toml template
 docs/                         # host integration guides, brainstorms
 launchd/                      # macOS service definitions
