@@ -25,9 +25,10 @@ Set these environment variables on the MCP process if you need explicit paths:
 - `LSPMUX_CONFIG_PATH`
 - `LSPMUX_SOCKET_PATH`
 
-The Claude MCP entry stamps `LSPMUX_CLIENT_KIND=claude_mcp` and `LSPMUX_CLIENT_HOST=claude` by default. The Claude LSP wrapper stamps `claude_lsp` / `claude`.
+The Claude MCP entry stamps `LSPMUX_CLIENT_KIND=claude_mcp`, `LSPMUX_CLIENT_HOST=claude`, and a generated session id by default when those values are unset. The Claude LSP wrapper stamps `claude_lsp` / `claude`.
 
 Hooks are informational only. They report whether a shared service is already running, but they do not start or manage services.
+Hook stdout is reserved for Claude JSON payloads. Hook diagnostics go to stderr and are best-effort only; they do not affect MCP correctness.
 
 The Rust MCP runtime is the only bootstrap authority for launchd/systemd/direct fallback behavior. Use `rust_server_status` after MCP startup to confirm bootstrap mode and rust-analyzer readiness.
 

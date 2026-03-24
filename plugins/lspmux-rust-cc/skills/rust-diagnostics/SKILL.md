@@ -47,4 +47,4 @@ rust_server_status()
 - **Output locations** (`file:line:col`) are **one-based**. To reuse an output location as input to another tool, subtract 1 from both line and column.
   - Example: `rust_goto_definition` returns `src/main.rs:42:5` → call next tool with `line=41, character=4`
 - After file edits, rust-analyzer needs a moment to re-analyze. If diagnostics seem stale, wait a few seconds and retry.
-- The lspmux server must be running (the session-start hook handles this automatically).
+- The lspmux server must be running. The session-start hook only reports status; the Rust MCP runtime owns bootstrap behavior.
