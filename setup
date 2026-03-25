@@ -310,20 +310,18 @@ cmd_doctor() {
     # Claude Code checks (optional)
     if command -v claude >/dev/null 2>&1; then
         echo
-        echo "  Claude Code integration:"
+        echo "  Claude Code integration (advisory):"
 
         # Check plugin installed
         if claude plugin list 2>/dev/null | grep -q "lspmux-rust-cc"; then
             echo "  [ok] lspmux-rust-cc plugin installed"
         else
-            echo "  [!!] lspmux-rust-cc plugin not installed"
-            failures=$((failures + 1))
+            echo "  [~~] lspmux-rust-cc plugin not installed"
         fi
 
         # Check built-in rust-analyzer disabled
         if claude plugin list 2>/dev/null | grep -q "rust-analyzer-lsp.*enabled"; then
-            echo "  [!!] built-in rust-analyzer-lsp is still enabled"
-            failures=$((failures + 1))
+            echo "  [~~] built-in rust-analyzer-lsp is still enabled"
         else
             echo "  [ok] built-in rust-analyzer-lsp disabled (or not present)"
         fi
@@ -334,11 +332,10 @@ cmd_doctor() {
             if jq -e --arg path "${LSPMUX_SOCKET_PATH}" '.sandbox.network.allowUnixSockets // [] | index($path) != null' "${settings_file}" >/dev/null 2>&1; then
                 echo "  [ok] socket path in allowUnixSockets"
             elif jq -e '.sandbox.network.allowAllUnixSockets == true' "${settings_file}" >/dev/null 2>&1; then
-                echo "  [!!] allowAllUnixSockets is true (insecure; use specific paths)"
+                echo "  [~~] allowAllUnixSockets is true (insecure; use specific paths)"
             else
-                echo "  [!!] socket path not in allowUnixSockets"
+                echo "  [~~] socket path not in allowUnixSockets"
                 echo "       run: ./setup sandbox claude-code"
-                failures=$((failures + 1))
             fi
         else
             echo "  [--] ~/.claude/settings.json not found (skipping sandbox check)"
