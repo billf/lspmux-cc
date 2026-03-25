@@ -5,8 +5,13 @@ set -euo pipefail
 # Reads tool input from stdin to extract file_path.
 # Only triggers sync for Rust-related files.
 
-if [ -n "${LSPMUX_PATH:-}" ] && [ -x "${LSPMUX_PATH}" ]; then
-    LSPMUX_BIN="${LSPMUX_PATH}"
+if [ -n "${LSPMUX_PATH:-}" ]; then
+    if [ -x "${LSPMUX_PATH}" ]; then
+        LSPMUX_BIN="${LSPMUX_PATH}"
+    else
+        printf '[lspmux-cc:post-file-edit] WARNING: LSPMUX_PATH is set but not executable: %s. Unset it or fix the path.\n' "${LSPMUX_PATH}" >&2
+        exit 0
+    fi
 elif command -v lspmux >/dev/null 2>&1; then
     LSPMUX_BIN="$(command -v lspmux)"
 else

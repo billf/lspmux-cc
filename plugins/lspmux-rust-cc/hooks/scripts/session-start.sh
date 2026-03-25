@@ -4,8 +4,13 @@ set -euo pipefail
 # Report shared-service status at session start.
 # Bootstrap decisions live in the Rust MCP runtime.
 
-if [ -n "${LSPMUX_PATH:-}" ] && [ -x "${LSPMUX_PATH}" ]; then
-    LSPMUX_BIN="${LSPMUX_PATH}"
+if [ -n "${LSPMUX_PATH:-}" ]; then
+    if [ -x "${LSPMUX_PATH}" ]; then
+        LSPMUX_BIN="${LSPMUX_PATH}"
+    else
+        printf '%s\n' '{"systemMessage": "WARNING: LSPMUX_PATH is set but not executable: '"${LSPMUX_PATH}"'. Unset it or fix the path."}'
+        exit 2
+    fi
 elif command -v lspmux >/dev/null 2>&1; then
     LSPMUX_BIN="$(command -v lspmux)"
 else

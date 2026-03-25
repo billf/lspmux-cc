@@ -206,10 +206,10 @@ else
 fi
 
 run_hook '' env LSPMUX_PATH="${RUN_DIR}/missing-lspmux" LSPMUX_BOOTSTRAP=auto WORKSPACE_ROOT="/tmp/workspace" bash "${SESSION_START}"
-if [ "${RUN_RC}" -eq 2 ] && assert_stdout_json && assert_stdout_contains "lspmux not installed" && assert_stderr_empty; then
-    pass "session-start.sh emits warning JSON when lspmux is missing"
+if [ "${RUN_RC}" -eq 2 ] && assert_stdout_json && assert_stdout_contains "LSPMUX_PATH is set but not executable" && assert_stderr_empty; then
+    pass "session-start.sh fails fast on broken LSPMUX_PATH"
 else
-    fail "session-start.sh did not emit the expected missing-binary payload"
+    fail "session-start.sh did not fail fast on broken LSPMUX_PATH"
 fi
 
 # --- Summary ---
