@@ -1,11 +1,13 @@
 //! Runtime bootstrap and service discovery for the shared lspmux service.
 
 use std::fs;
+use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration as StdDuration;
 
 use anyhow::{bail, Context, Result};
 use directories::BaseDirs;
@@ -42,6 +44,58 @@ impl BootstrapMode {
     }
 }
 
+/// Transport address parsed from the lspmux config's `connect` field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectAddr {
+    /// TCP host and port (e.g. `connect = ["127.0.0.1", 27631]`).
+    Tcp(String, u16),
+    /// Unix domain socket path (e.g. `connect = "/run/lspmux.sock"`).
+    Unix(String),
+}
+
+/// Parse the `connect` field from a lspmux TOML config string.
+///
+/// Returns `None` if the field is missing or has an unrecognized shape.
+fn parse_connect_addr(config_toml: &str) -> Option<ConnectAddr> {
+    let table: toml::Table = config_toml.parse().ok()?;
+    let connect = table.get("connect")?;
+    parse_connect_value(connect)
+}
+
+fn parse_connect_value(value: &toml::Value) -> Option<ConnectAddr> {
+    match value {
+        toml::Value::String(raw) => parse_connect_string(raw),
+        toml::Value::Array(arr) if arr.len() == 2 => {
+            let host = arr[0].as_str()?;
+            let port = arr[1].as_integer()?;
+            let port = u16::try_from(port).ok()?;
+            Some(ConnectAddr::Tcp(host.to_string(), port))
+        }
+        _ => None,
+    }
+}
+
+fn parse_connect_string(raw: &str) -> Option<ConnectAddr> {
+    if let Some(addr) = raw.strip_prefix("tcp://") {
+        return parse_tcp_host_port(addr);
+    }
+
+    if raw.starts_with('/') {
+        return Some(ConnectAddr::Unix(raw.to_string()));
+    }
+
+    parse_tcp_host_port(raw).or_else(|| Some(ConnectAddr::Unix(raw.to_string())))
+}
+
+fn parse_tcp_host_port(raw: &str) -> Option<ConnectAddr> {
+    let (host, port) = raw.rsplit_once(':')?;
+    if host.is_empty() {
+        return None;
+    }
+    let port = port.parse::<u16>().ok()?;
+    Some(ConnectAddr::Tcp(host.to_string(), port))
+}
+
 /// How the shared lspmux service was obtained.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +126,8 @@ pub struct RuntimeConfig {
     pub config_path: String,
     pub socket_path: String,
     pub bootstrap_mode: BootstrapMode,
+    /// Transport address parsed from the config's `connect` field, if available.
+    pub connect_addr: Option<ConnectAddr>,
 }
 
 impl RuntimeConfig {
@@ -117,6 +173,11 @@ impl RuntimeConfig {
         let bootstrap_mode =
             BootstrapMode::parse(std::env::var("LSPMUX_BOOTSTRAP").ok().as_deref())?;
 
+        let connect_addr = fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|contents| parse_connect_addr(&contents))
+            .or_else(|| parse_connect_string(&socket_path));
+
         Ok(Self {
             lspmux_path,
             server_path,
@@ -124,6 +185,7 @@ impl RuntimeConfig {
             config_path,
             socket_path,
             bootstrap_mode,
+            connect_addr,
         })
     }
 
@@ -140,7 +202,7 @@ impl RuntimeConfig {
             return Ok(self.runtime_status(ServiceMode::Skipped));
         }
 
-        if self.socket_ready() {
+        if self.service_ready() {
             return Ok(self.runtime_status(ServiceMode::Reused));
         }
 
@@ -202,14 +264,18 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    fn socket_ready(&self) -> bool {
-        socket_is_ready(&self.socket_path)
+    fn service_ready(&self) -> bool {
+        match &self.connect_addr {
+            Some(ConnectAddr::Tcp(host, port)) => tcp_is_ready(host, *port),
+            Some(ConnectAddr::Unix(path)) => socket_is_ready(path),
+            None => socket_is_ready(&self.socket_path),
+        }
     }
 
     async fn wait_for_socket(&self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if self.socket_ready() {
+            if self.service_ready() {
                 return true;
             }
             sleep(Duration::from_millis(200)).await;
@@ -232,10 +298,13 @@ impl RuntimeConfig {
                 .arg("bootstrap")
                 .arg(format!("gui/{}", nix_like_uid()))
                 .arg(&plist)
+                .stderr(std::process::Stdio::null())
                 .status()
                 .await
                 .context("failed to run launchctl bootstrap")?;
-            return Ok(status.success());
+            // Exit code 5 means the service is already loaded, which is fine.
+            let already_loaded = status.code() == Some(5);
+            return Ok(status.success() || already_loaded);
         }
 
         #[cfg(target_os = "linux")]
@@ -346,6 +415,14 @@ fn resolve_server_path(configured_path: Option<String>, path_lookup: Option<Path
             |path| path.to_string_lossy().into_owned(),
         )
     })
+}
+
+fn tcp_is_ready(host: &str, port: u16) -> bool {
+    TcpStream::connect_timeout(
+        &format!("{host}:{port}").parse().unwrap(),
+        StdDuration::from_millis(500),
+    )
+    .is_ok()
 }
 
 fn socket_is_ready(path: &str) -> bool {
@@ -469,5 +546,74 @@ mod tests {
     fn resolve_server_path_falls_back_to_binary_name() {
         let resolved = resolve_server_path(None, None);
         assert_eq!(resolved, SERVER_NAME);
+    }
+
+    #[test]
+    fn parse_connect_addr_tcp() {
+        let config = r#"
+listen = ["127.0.0.1", 27631]
+connect = ["127.0.0.1", 27631]
+"#;
+        assert_eq!(
+            parse_connect_addr(config),
+            Some(ConnectAddr::Tcp("127.0.0.1".to_string(), 27631))
+        );
+    }
+
+    #[test]
+    fn parse_connect_addr_unix() {
+        let config = r#"connect = "/run/lspmux/lspmux.sock""#;
+        assert_eq!(
+            parse_connect_addr(config),
+            Some(ConnectAddr::Unix("/run/lspmux/lspmux.sock".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_connect_addr_tcp_string() {
+        let config = r#"connect = "127.0.0.1:27631""#;
+        assert_eq!(
+            parse_connect_addr(config),
+            Some(ConnectAddr::Tcp("127.0.0.1".to_string(), 27631))
+        );
+    }
+
+    #[test]
+    fn parse_connect_addr_tcp_url() {
+        let config = r#"connect = "tcp://127.0.0.1:27631""#;
+        assert_eq!(
+            parse_connect_addr(config),
+            Some(ConnectAddr::Tcp("127.0.0.1".to_string(), 27631))
+        );
+    }
+
+    #[test]
+    fn parse_connect_addr_missing() {
+        let config = r#"listen = ["127.0.0.1", 27631]"#;
+        assert_eq!(parse_connect_addr(config), None);
+    }
+
+    #[test]
+    fn parse_connect_string_prefers_tcp_socket_path_override() {
+        assert_eq!(
+            parse_connect_string("tcp://127.0.0.1:27631"),
+            Some(ConnectAddr::Tcp("127.0.0.1".to_string(), 27631))
+        );
+    }
+
+    #[test]
+    fn tcp_is_ready_detects_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(tcp_is_ready("127.0.0.1", port));
+    }
+
+    #[test]
+    fn tcp_is_ready_returns_false_for_closed_port() {
+        // Bind then immediately drop to get a port that's definitely not listening.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!tcp_is_ready("127.0.0.1", port));
     }
 }
