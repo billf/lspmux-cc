@@ -6,7 +6,8 @@
         "RUST_ANALYZER_PATH": "${CLAUDE_PLUGIN_ROOT}/bin/rust-analyzer",
         "LSPMUX_BOOTSTRAP": "require",
         "LSPMUX_CLIENT_KIND": "claude_mcp",
-        "LSPMUX_CLIENT_HOST": "claude"
+        "LSPMUX_CLIENT_HOST": "claude",
+        "LSPMUX_CONFIG_PATH": "${LSPMUX_CONFIG_PATH}"
       }
     }
   }
