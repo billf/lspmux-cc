@@ -170,13 +170,16 @@ impl RuntimeConfig {
                 std::env::var("TMPDIR").ok().as_deref(),
             )
         });
+        let connect_hint = std::env::var("LSPMUX_CONNECT")
+            .ok()
+            .or_else(|| std::env::var("LSPMUX_SOCKET_PATH").ok());
         let bootstrap_mode =
             BootstrapMode::parse(std::env::var("LSPMUX_BOOTSTRAP").ok().as_deref())?;
 
         let connect_addr = fs::read_to_string(&config_path)
             .ok()
             .and_then(|contents| parse_connect_addr(&contents))
-            .or_else(|| parse_connect_string(&socket_path));
+            .or_else(|| connect_hint.as_deref().and_then(parse_connect_string));
 
         Ok(Self {
             lspmux_path,
@@ -598,6 +601,14 @@ connect = ["127.0.0.1", 27631]
         assert_eq!(
             parse_connect_string("tcp://127.0.0.1:27631"),
             Some(ConnectAddr::Tcp("127.0.0.1".to_string(), 27631))
+        );
+    }
+
+    #[test]
+    fn parse_connect_string_accepts_unix_socket_path_override() {
+        assert_eq!(
+            parse_connect_string("/tmp/lspmux/lspmux.sock"),
+            Some(ConnectAddr::Unix("/tmp/lspmux/lspmux.sock".to_string()))
         );
     }
 

@@ -230,7 +230,8 @@ You can restrict tools via `disallowedTools` in Claude Code's configuration if n
 | `LSPMUX_PATH` | `lspmux` on `$PATH`, then `$CARGO_HOME/bin/lspmux` | Path to the lspmux binary. Overridable. |
 | `RUST_ANALYZER_PATH` | unset | Preferred explicit path to the rust-analyzer binary. If unset, the wrappers fall back to `rust-analyzer` on `$PATH`. |
 | `LSPMUX_CONFIG_PATH` | `~/Library/Application Support/lspmux/config.toml` (macOS), `$XDG_CONFIG_HOME/lspmux/config.toml` (Linux) | Path to the lspmux TOML config file. Overridable. |
-| `LSPMUX_SOCKET_PATH` | `$TMPDIR/lspmux/lspmux.sock` (macOS), `$XDG_RUNTIME_DIR/lspmux/lspmux.sock` (Linux) | Unix socket path for client-server communication. Overridable. Must match the `listen` value in lspmux config. |
+| `LSPMUX_CONNECT` | config `connect` value | Explicit lspmux client endpoint override. Accepts Unix socket paths, `host:port`, or `tcp://host:port`. Preferred for `.mcp.json` or plugin env overrides. |
+| `LSPMUX_SOCKET_PATH` | `$TMPDIR/lspmux/lspmux.sock` (macOS), `$XDG_RUNTIME_DIR/lspmux/lspmux.sock` (Linux) | Legacy endpoint override. Still accepted for compatibility, but `LSPMUX_CONNECT` is preferred. |
 | `LSPMUX_CLIENT_KIND` | `claude_mcp` (MCP wrapper), `claude_lsp` (LSP wrapper) | Identifies the client type in telemetry and logs. Auto-set by the bin wrappers. |
 | `LSPMUX_CLIENT_HOST` | `claude` | Identifies the host application. Auto-set by the bin wrappers. |
 | `LSPMUX_SESSION_ID` | `claude-mcp-$$-$(date +%s)` or `claude-lsp-$$-$(date +%s)` | Unique session identifier for telemetry correlation. Auto-generated from PID and timestamp if not set. |

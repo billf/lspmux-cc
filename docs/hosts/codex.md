@@ -22,11 +22,15 @@ export LSPMUX_BOOTSTRAP=auto
 export LSPMUX_PATH="$HOME/.cargo/bin/lspmux"
 export RUST_ANALYZER_PATH="$(command -v rust-analyzer)"
 export LSPMUX_CONFIG_PATH="$HOME/.config/lspmux/config.toml"
-export LSPMUX_SOCKET_PATH="${TMPDIR:-/tmp}/lspmux/lspmux.sock"
+export LSPMUX_CONNECT="${TMPDIR:-/tmp}/lspmux/lspmux.sock"
 export LSPMUX_CLIENT_KIND="codex_mcp"
 export LSPMUX_CLIENT_HOST="codex"
 export LSPMUX_SESSION_ID="codex-$(date +%s)-$$"
 ```
+
+`LSPMUX_CONNECT` accepts either a Unix socket path or a TCP endpoint like
+`tcp://127.0.0.1:27631`. `LSPMUX_SOCKET_PATH` is still accepted as a
+compatibility alias, but `LSPMUX_CONNECT` is the explicit name going forward.
 
 For reproducible Nix setups, prefer exporting `RUST_ANALYZER_PATH` from this
 flake's pinned package, for example via `nix build .#rust-analyzer` or a dev

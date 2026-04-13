@@ -98,7 +98,8 @@ Works with any MCP-capable host. See `docs/hosts/generic-mcp.md`.
 | `LSPMUX_PATH` | found via PATH or `$CARGO_HOME/bin` | Path to the lspmux binary |
 | `RUST_ANALYZER_PATH` | found via PATH or managed install | Path to the rust-analyzer binary |
 | `LSPMUX_CONFIG_PATH` | platform default | macOS: `~/Library/Application Support/lspmux/config.toml`; Linux: `$XDG_CONFIG_HOME/lspmux/config.toml` |
-| `LSPMUX_SOCKET_PATH` | `$XDG_RUNTIME_DIR/lspmux/lspmux.sock` | Unix socket for the lspmux server |
+| `LSPMUX_CONNECT` | config `connect` value | Explicit lspmux client endpoint override. Accepts Unix socket paths, `host:port`, or `tcp://host:port`. |
+| `LSPMUX_SOCKET_PATH` | `$XDG_RUNTIME_DIR/lspmux/lspmux.sock` | Legacy endpoint override. Still accepted for compatibility, but `LSPMUX_CONNECT` is preferred. |
 
 ## Project Layout
 

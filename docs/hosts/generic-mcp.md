@@ -15,12 +15,15 @@ Any MCP-capable host can use `lspmux-cc-mcp` directly.
 - `LSPMUX_PATH`
 - `RUST_ANALYZER_PATH`
 - `LSPMUX_CONFIG_PATH`
+- `LSPMUX_CONNECT`
 - `LSPMUX_SOCKET_PATH`
 - `LSPMUX_CLIENT_KIND`
 - `LSPMUX_CLIENT_HOST`
 - `LSPMUX_SESSION_ID`
 
 `LSPMUX_BOOTSTRAP=auto` is the default and will reuse the shared service when available, then fall back to a direct foreground `lspmux server` process if no managed user service is ready.
+
+Prefer `LSPMUX_CONNECT` when the host needs to override the client endpoint directly, especially for TCP mode like `tcp://127.0.0.1:27631`. `LSPMUX_SOCKET_PATH` remains supported as a backwards-compatible alias.
 
 ## Launch Command
 
