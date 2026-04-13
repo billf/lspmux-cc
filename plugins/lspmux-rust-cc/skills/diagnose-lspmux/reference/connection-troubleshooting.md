@@ -16,7 +16,7 @@ The most common Claude Code failure. The socket file is present at the expected 
 }
 ```
 
-Replace the path with your actual socket path (run `./setup doctor` to find it).
+Replace the path with your actual socket path. Derive it from `LSPMUX_CONNECT`, `LSPMUX_SOCKET_PATH`, or the lspmux config `connect` value.
 
 Automated fix: `./setup sandbox claude-code`
 
@@ -24,7 +24,7 @@ Automated fix: `./setup sandbox claude-code`
 
 ## Service not running
 
-`./setup doctor` shows `shared socket: not ready`.
+In the `lspmux-cc` repo, `./setup doctor` shows `shared socket: not ready`.
 
 The lspmux server isn't running. Inside Claude Code's sandbox, `launchctl bootstrap` is blocked (requires `mach-bootstrap` privilege). The service must be pre-started.
 
@@ -72,7 +72,8 @@ During indexing, `rust_diagnostics` may return empty results or partial data. `r
 If Unix socket configuration isn't possible, lspmux supports TCP localhost:
 
 1. Edit `config.toml`: set `listen = "tcp://127.0.0.1:27631"`
-2. Set `LSPMUX_SOCKET_PATH=tcp://127.0.0.1:27631` in environment
+2. Set `LSPMUX_CONNECT=tcp://127.0.0.1:27631` in environment
+3. If you still have older host config using `LSPMUX_SOCKET_PATH`, that alias still works for compatibility
 
 This bypasses the sandbox's Unix socket restriction because localhost TCP is allowed by default. The tradeoff: any local process can connect to the lspmux server. There's no authentication.
 
