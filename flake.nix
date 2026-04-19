@@ -45,10 +45,12 @@
           };
 
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+          jqBin = "${pkgs.jq}/bin";
         in
         {
           overlayAttrs = {
-            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer rust-analyzer-nightly;
+            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer rust-analyzer-nightly plugin;
           };
 
           packages = {
@@ -65,6 +67,35 @@
               meta.mainProgram = "lspmux";
             };
             inherit rust-analyzer rust-analyzer-nightly;
+
+            plugin = pkgs.runCommand "lspmux-rust-cc-plugin" {
+              meta.description = "lspmux-rust-cc Claude Code plugin (Nix-assembled)";
+            } ''
+              mkdir -p $out/.claude-plugin $out/bin $out/hooks/scripts $out/skills
+
+              # Static files
+              cp ${./.claude-plugin/plugin.json} $out/.claude-plugin/plugin.json
+              cp ${./.mcp.json}                  $out/.mcp.json
+              cp ${./.lsp.json}                  $out/.lsp.json
+              cp ${./hooks/hooks.json}           $out/hooks/hooks.json
+              cp -r ${./skills}/*                $out/skills/
+
+              # Bin symlinks -> Nix store binaries
+              ln -s ${self'.packages.lspmux}/bin/lspmux                $out/bin/lspmux
+              ln -s ${self'.packages.lspmux-cc-mcp}/bin/lspmux-cc-mcp  $out/bin/lspmux-cc-mcp
+              ln -s ${self'.packages.rust-analyzer}/bin/rust-analyzer   $out/bin/rust-analyzer
+
+              # Hook scripts with jq store-path injected onto PATH
+              for script in session-start.sh post-file-edit.sh; do
+                {
+                  echo '#!/usr/bin/env bash'
+                  echo 'export PATH="${jqBin}:''${PATH:-}"'
+                  tail -n +2 ${./hooks/scripts}/$script
+                } > $out/hooks/scripts/$script
+                chmod +x $out/hooks/scripts/$script
+              done
+            '';
+
             default = self'.packages.lspmux-cc-mcp;
           };
 
@@ -77,6 +108,21 @@
             tests = craneLib.cargoTest (commonArgs // {
               inherit cargoArtifacts;
             });
+            plugin-structure = pkgs.runCommand "check-plugin-structure" {} ''
+              test -f ${self'.packages.plugin}/.claude-plugin/plugin.json
+              test -f ${self'.packages.plugin}/.mcp.json
+              test -f ${self'.packages.plugin}/.lsp.json
+              test -L ${self'.packages.plugin}/bin/lspmux
+              test -L ${self'.packages.plugin}/bin/lspmux-cc-mcp
+              test -L ${self'.packages.plugin}/bin/rust-analyzer
+              test -x ${self'.packages.plugin}/hooks/scripts/session-start.sh
+              test -x ${self'.packages.plugin}/hooks/scripts/post-file-edit.sh
+              test -f ${self'.packages.plugin}/skills/diagnose-lspmux/SKILL.md
+              test -f ${self'.packages.plugin}/skills/rust-diagnostics/SKILL.md
+              test -x "$(readlink ${self'.packages.plugin}/bin/lspmux)"
+              test -x "$(readlink ${self'.packages.plugin}/bin/lspmux-cc-mcp)"
+              touch $out
+            '';
           };
 
           devShells.default = pkgs.mkShell {

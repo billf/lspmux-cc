@@ -17,9 +17,10 @@ echo "-- File existence --"
 for f in setup config/lspmux.toml \
          launchd/com.lspmux.server.plist \
          systemd/lspmux.service \
-         plugins/lspmux-rust-cc/.claude-plugin/plugin.json \
-         plugins/lspmux-rust-cc/bin/lspmux plugins/lspmux-rust-cc/bin/rust-analyzer \
+         .claude-plugin/plugin.json \
+         bin/lspmux bin/rust-analyzer \
          .claude-plugin/marketplace.json \
+         .mcp.json .lsp.json \
          docs/hosts/claude-code.md docs/hosts/codex.md docs/hosts/generic-mcp.md; do
     if [ -f "${SCRIPT_DIR}/${f}" ]; then
         pass "${f} exists"
@@ -30,8 +31,8 @@ done
 
 # --- Executable bits ---
 echo "-- Executable permissions --"
-for f in setup plugins/lspmux-rust-cc/bin/lspmux \
-         plugins/lspmux-rust-cc/bin/rust-analyzer; do
+for f in setup bin/lspmux \
+         bin/rust-analyzer; do
     if [ -x "${SCRIPT_DIR}/${f}" ]; then
         pass "${f} is executable"
     else
@@ -41,8 +42,9 @@ done
 
 # --- JSON validity ---
 echo "-- JSON validity --"
-for f in plugins/lspmux-rust-cc/.claude-plugin/plugin.json \
-         .claude-plugin/marketplace.json; do
+for f in .claude-plugin/plugin.json \
+         .claude-plugin/marketplace.json \
+         .mcp.json .lsp.json; do
     if jq . "${SCRIPT_DIR}/${f}" >/dev/null 2>&1; then
         pass "${f} is valid JSON"
     else
@@ -81,7 +83,7 @@ fi
 echo "-- Rust analyzer provisioning contract --"
 if ! grep -qE 'update-rust-analyzer|lspmux-rust-analyzer/current|result-rust-analyzer-nightly' \
     "${SCRIPT_DIR}/setup" \
-    "${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/rust-analyzer" \
+    "${SCRIPT_DIR}/bin/rust-analyzer" \
     "${SCRIPT_DIR}/docs/hosts/codex.md" \
     "${SCRIPT_DIR}/docs/hosts/generic-mcp.md"; then
     pass "setup and wrappers no longer reference repo-managed rust-analyzer downloads"
@@ -91,11 +93,20 @@ fi
 
 # --- plugin.json structure ---
 echo "-- plugin.json structure --"
-PLUGIN_JSON="${SCRIPT_DIR}/plugins/lspmux-rust-cc/.claude-plugin/plugin.json"
-if jq -e '.lspServers["rust-analyzer"].command' "${PLUGIN_JSON}" >/dev/null 2>&1; then
-    pass "plugin.json has rust-analyzer lspServer"
+PLUGIN_JSON="${SCRIPT_DIR}/.claude-plugin/plugin.json"
+if jq -e '.name' "${PLUGIN_JSON}" >/dev/null 2>&1; then
+    pass "plugin.json has name field"
 else
-    fail "plugin.json missing rust-analyzer lspServer"
+    fail "plugin.json missing name field"
+fi
+
+# --- .lsp.json structure ---
+echo "-- .lsp.json structure --"
+LSP_JSON="${SCRIPT_DIR}/.lsp.json"
+if jq -e '.["rust-analyzer"].command' "${LSP_JSON}" >/dev/null 2>&1; then
+    pass ".lsp.json has rust-analyzer server"
+else
+    fail ".lsp.json missing rust-analyzer server"
 fi
 
 # --- Summary ---

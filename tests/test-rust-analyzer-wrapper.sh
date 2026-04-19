@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WRAPPER="${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/rust-analyzer"
+WRAPPER="${SCRIPT_DIR}/bin/rust-analyzer"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "${TEST_DIR}" "${SCRIPT_DIR}/result-rust-analyzer-nightly"' EXIT

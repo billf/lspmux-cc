@@ -9,7 +9,11 @@ export LSPMUX_CLIENT_KIND="${LSPMUX_CLIENT_KIND:-claude_lsp}"
 export LSPMUX_CLIENT_HOST="${LSPMUX_CLIENT_HOST:-claude}"
 export LSPMUX_SESSION_ID="${LSPMUX_SESSION_ID:-claude-lsp-$$-$(date +%s)}"
 
-if [ -n "${LSPMUX_PATH:-}" ] && [ -x "${LSPMUX_PATH}" ]; then
+_SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+_PLUGIN_CANDIDATE="${CLAUDE_PLUGIN_ROOT:-}/bin/lspmux"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${_PLUGIN_CANDIDATE}" ] && [ "${_PLUGIN_CANDIDATE}" != "${_SELF}" ]; then
+    LSPMUX_BIN="${_PLUGIN_CANDIDATE}"
+elif [ -n "${LSPMUX_PATH:-}" ] && [ -x "${LSPMUX_PATH}" ]; then
     LSPMUX_BIN="${LSPMUX_PATH}"
 elif command -v lspmux >/dev/null 2>&1; then
     LSPMUX_BIN="$(command -v lspmux)"

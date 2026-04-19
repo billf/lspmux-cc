@@ -1,0 +1,7 @@
+{
+  "rust-analyzer": {
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/lspmux",
+    "args": ["client", "--server-path", "${CLAUDE_PLUGIN_ROOT}/bin/rust-analyzer"],
+    "extensionToLanguage": { ".rs": "rust" }
+  }
+}

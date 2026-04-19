@@ -196,7 +196,7 @@ Set these environment variables for the MCP process:
   LSPMUX_SESSION_ID=codex-\$(date +%s)-\$$
 
 Launch the MCP server with:
-  ${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp
+  ${SCRIPT_DIR}/bin/lspmux-cc-mcp
 
 Reference: ${SCRIPT_DIR}/docs/hosts/codex.md
 EOF
@@ -207,7 +207,7 @@ cmd_host_generic_mcp() {
 Generic MCP adapter
 
 Use the same environment contract as Codex and launch:
-  ${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp
+  ${SCRIPT_DIR}/bin/lspmux-cc-mcp
 
 Reference: ${SCRIPT_DIR}/docs/hosts/generic-mcp.md
 EOF

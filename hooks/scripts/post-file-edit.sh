@@ -5,7 +5,9 @@ set -euo pipefail
 # Reads tool input from stdin to extract file_path.
 # Only triggers sync for Rust-related files.
 
-if [ -n "${LSPMUX_PATH:-}" ]; then
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${CLAUDE_PLUGIN_ROOT}/bin/lspmux" ]; then
+    LSPMUX_BIN="${CLAUDE_PLUGIN_ROOT}/bin/lspmux"
+elif [ -n "${LSPMUX_PATH:-}" ]; then
     if [ -x "${LSPMUX_PATH}" ]; then
         LSPMUX_BIN="${LSPMUX_PATH}"
     else

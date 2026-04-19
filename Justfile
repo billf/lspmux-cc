@@ -42,7 +42,11 @@ integration-test:
 
 # Lint all shell scripts
 shellcheck:
-    shellcheck setup bin/* plugins/**/hooks/scripts/*.sh plugins/**/bin/*
+    shellcheck setup bin/* hooks/scripts/*.sh
+
+# Build the assembled plugin via nix
+nix-plugin:
+    nix build .#plugin -o result-plugin
 
 # Pre-push: check + clippy + fmt + test
 pre-push: check clippy fmt-check test

@@ -4,7 +4,7 @@ set -euo pipefail
 # Test that Phase 2 hook files are properly structured and valid.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLUGIN_DIR="${SCRIPT_DIR}/plugins/lspmux-rust-cc"
+PLUGIN_DIR="${SCRIPT_DIR}"
 SESSION_START="${PLUGIN_DIR}/hooks/scripts/session-start.sh"
 POST_FILE_EDIT="${PLUGIN_DIR}/hooks/scripts/post-file-edit.sh"
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lspmux-hooks.XXXXXX")"

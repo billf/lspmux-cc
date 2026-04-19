@@ -28,5 +28,5 @@ Prefer `LSPMUX_CONNECT` when the host needs to override the client endpoint dire
 ## Launch Command
 
 ```bash
-plugins/lspmux-rust-cc/bin/lspmux-cc-mcp
+bin/lspmux-cc-mcp
 ```

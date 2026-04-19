@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WRAPPER="${SCRIPT_DIR}/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp"
+WRAPPER="${SCRIPT_DIR}/bin/lspmux-cc-mcp"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "${TEST_DIR}"' EXIT

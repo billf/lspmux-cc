@@ -81,7 +81,7 @@ The 5-minute idle timeout is the primary cleanup mechanism. Socket dirs on macOS
 
 - `mcp-server/src/bootstrap.rs` — replace single `socket_path` with per-worktree socket resolution (worktree detection, hash computation, config generation, spawn locking)
 - `setup` — generate a template config or remove config-writing entirely (let the MCP server generate configs on demand)
-- `plugins/lspmux-rust-cc/hooks/scripts/session-start.sh` — pass worktree-specific socket path when checking/starting service
+- `hooks/scripts/session-start.sh` — pass worktree-specific socket path when checking/starting service
 - `config/lspmux.toml` — template becomes per-instance, generated at runtime
 - `launchd/com.lspmux.server.plist` — keep only for primary workspace; per-worktree instances spawn on demand
 

@@ -1,12 +1,13 @@
 {
   "name": "lspmux-cc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared rust-analyzer service for Claude Code, Codex, and other MCP hosts",
   "author": "bill",
   "plugins": [
     {
       "name": "lspmux-rust-cc",
-      "path": "plugins/lspmux-rust-cc"
+      "description": "Rust LSP via lspmux - shared rust-analyzer service for Claude Code",
+      "source": "./"
     }
   ]
 }

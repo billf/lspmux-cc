@@ -1,0 +1,5 @@
+{
+  "name": "lspmux-rust-cc",
+  "version": "0.2.0",
+  "description": "Rust LSP via lspmux - shared rust-analyzer service for Claude Code"
+}

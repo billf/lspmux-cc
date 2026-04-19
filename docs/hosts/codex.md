@@ -45,7 +45,7 @@ $HOME/Library/Application Support/lspmux/config.toml
 Launch the server with:
 
 ```bash
-plugins/lspmux-rust-cc/bin/lspmux-cc-mcp
+bin/lspmux-cc-mcp
 ```
 
 ## Tool Surface
@@ -68,7 +68,7 @@ Codex uses TOML config files, not `.mcp.json`. You can configure lspmux-cc direc
 
 ```toml
 [mcp_servers.lspmux-rust-analyzer]
-command = "/absolute/path/to/lspmux-cc/plugins/lspmux-rust-cc/bin/lspmux-cc-mcp"
+command = "/absolute/path/to/lspmux-cc/bin/lspmux-cc-mcp"
 args = []
 
 [mcp_servers.lspmux-rust-analyzer.env]

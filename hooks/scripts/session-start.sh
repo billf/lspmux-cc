@@ -4,7 +4,9 @@ set -euo pipefail
 # Report shared-service status at session start.
 # Bootstrap decisions live in the Rust MCP runtime.
 
-if [ -n "${LSPMUX_PATH:-}" ]; then
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${CLAUDE_PLUGIN_ROOT}/bin/lspmux" ]; then
+    LSPMUX_BIN="${CLAUDE_PLUGIN_ROOT}/bin/lspmux"
+elif [ -n "${LSPMUX_PATH:-}" ]; then
     if [ -x "${LSPMUX_PATH}" ]; then
         LSPMUX_BIN="${LSPMUX_PATH}"
     else

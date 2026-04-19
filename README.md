@@ -115,10 +115,12 @@ mcp-server/                   # Rust MCP server (the main binary)
     tools.rs                  # MCP tool definitions
   tests/
     integration.rs            # multi-client sharing test
-plugins/lspmux-rust-cc/      # Claude Code plugin
-  bin/                        # wrapper scripts
-  hooks/                      # session-start, post-file-edit
-  skills/                     # tool documentation
+bin/                          # wrapper scripts (lspmux, lspmux-cc-mcp, rust-analyzer)
+hooks/                        # session-start, post-file-edit
+skills/                       # tool documentation & diagnostics
+.claude-plugin/               # plugin manifest + marketplace metadata
+.mcp.json                     # MCP server config
+.lsp.json                     # LSP server config
 setup                         # installation script
 systemd/                      # Linux service definitions
 todos/                        # tracked issues and roadmap

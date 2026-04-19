@@ -5,7 +5,8 @@ LSP multiplexing for Claude Code via [lspmux-rust-analyzer](https://github.com/s
 ## Project Layout
 
 - Shell-script-first project with a Rust sub-project under `mcp-server/`
-- Nix flake provides devShell, packages, and checks
+- Plugin files at repo root: `.claude-plugin/`, `.mcp.json`, `.lsp.json`, `bin/`, `hooks/`, `skills/`
+- Nix flake provides devShell, packages (including `plugin`), and checks
 - Cargo workspace lives only under `mcp-server/`
 
 ## Build Commands
