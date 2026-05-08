@@ -26,6 +26,12 @@ macOS launchd LaunchAgent. v0.2.0. Currently the **only** RA-MCP project sharing
 a persistent rust-analyzer instance — the differentiator is concrete (RA cold
 start: seconds to minutes; 1GB+ RAM baseline; 40GB pathological).
 
+**Value prop.** A shared persistent daemon amortizes RA startup cost and memory
+across multiple clients (editors, agents, CI smoke tools), unblocking
+editor/agent combinations that cannot tolerate per-client cold start. Whether
+this is a durable moat or a temporary niche is itself an open question — see
+the Open Questions section.
+
 **Named pain points (from codebase scan).** REV-009 hooks suppress errors with
 `2>/dev/null || true`. REV-008 no response cache, no in-flight coalescing.
 ARCH-1 tools.rs (702 LOC) trapped in binary crate, untestable. AGENT-1/2 no
@@ -85,18 +91,23 @@ needs a feature flag at minimum. Additional surface area for bugs.
 the library; the binary stays a transport adapter.
 
 **Warrant:** `direct:` ARCH-1 named in grounding ("tools.rs (702 LOC) trapped
-in binary crate, can't be integration-tested"). Cargo workspace structure
-already exists under `mcp-server/` — adding a sibling crate is mechanical.
+in binary crate, can't be integration-tested"). `mcp-server/Cargo.toml` is
+currently a single `[package]` (no `[workspace]` section); the split introduces
+a workspace root, moves the binary into a sibling crate, and re-points the Nix
+flake (crane manifest paths) plus Justfile recipes that pin
+`--manifest-path mcp-server/Cargo.toml`.
 
 **Rationale:** 702 LOC of LSP-protocol logic with no integration tests is a
 regression magnet. The April 2026 bootstrap fixes (TCP detection,
 LSPMUX_CONFIG_PATH propagation) are exactly the code that needs a test harness
-and is currently impossible to test. Library boundary also unlocks alternate
-frontends (CLI, HTTP, gRPC), polyglot LSP expansion, and reuse by the 3
-competing RA-MCP servers as a daemon-sharing layer.
+and is currently impossible to test. Whether the library boundary should also
+be marketed as a platform for hypothetical alternate client interfaces (CLI,
+HTTP, gRPC) or downstream reuse is a separate scope question — see Open
+Questions; the testability win stands on its own.
 
-**Downsides:** Cargo workspace touch-ups. Versioning and API stability decisions
-if the core crate is published. None block the move; all are normal library work.
+**Downsides:** Workspace introduction (not "touch-ups" — the manifest is
+currently single-package), Nix flake and Justfile rewires alongside the source
+split, and a versioning decision if the core crate is ever published.
 
 **Confidence:** 95%
 **Complexity:** Low
@@ -341,3 +352,172 @@ After `ExitPlanMode` approval, the user picks one of:
 - Open and iterate in Proof (HITL review loop with collaborative comments)
 - Brainstorm a selected idea (load `/ce-brainstorm` with the chosen idea as seed)
 - Save and end (persist this artifact to `docs/ideation/2026-04-30-open-ideation.md`)
+
+## Deferred / Open Questions
+
+### From 2026-04-30 review (`/ce-doc-review`)
+
+Items deferred from a 6-persona review run on this doc. Each line carries its
+severity, the section it applies to, and the persona that raised it. These are
+open questions, not commitments.
+
+#### P0 — security gating
+
+- **`Idea #6(b)` — Auto-allowlist socket-path injection vector** *(security-lens, anchor 100).*
+  A workspace-local `.lsp.json` is an untrusted source crossing into a global
+  trust boundary. Before #6(b) ships, decide: must socket paths be validated
+  against an allowlist of expected directory prefixes (e.g.,
+  `~/Library/Application Support/lspmux/`, `/tmp/lspmux-*`)? Is the merge
+  prompted on first observation rather than auto-applied? Is the marker
+  revocable on path change?
+
+#### P1 — premise and framing
+
+- **Differentiator premise not stress-tested vs cheap-RA falsifier** *(adversarial, anchor 75, root).*
+  What evidence would falsify "shared persistent daemon is the right design"?
+  If RA upstream ships rkyv-serialized salsa state or sccache-style index
+  reuse, the cold-start amortization story narrows. Name the falsifier and a
+  re-evaluation trigger.
+- **"Only RA-MCP sharing a daemon" — moat or implementation accident?** *(product-lens, anchor 75).*
+  Three competitors haven't built daemon-sharing. Is that because it's hard,
+  or because their users don't run multi-editor workflows? If the latter,
+  "monetize the differentiator" via #6 is throwing release-pipeline cost at
+  a population that doesn't feel the pain.
+- **No stated product goal — ranking has no north star** *(product-lens, anchor 75, root).*
+  What is lspmux-cc trying to become, and for whom? Daily-active editor
+  sessions? GitHub stars? Maintainer ergonomics? Without a goal, the 7-vs-24
+  ranking is author preference dressed as analysis.
+- **Survivor set is front-loaded with infra; only #1 is user-facing** *(scope-guardian + product-lens, anchor 100 after cross-persona promotion).*
+  Of the 7 survivors, #2/#3/#4/#5 are infrastructure refactors. Should #1
+  (code actions) ship ahead of #2 even though the cross-cutting note marks
+  #2 "do this first"?
+- **Pick-one vs survivor-set composes oscillation** *(adversarial, anchor 75).*
+  Verification Plan says "user picks one to take into /ce-brainstorm" but
+  Cross-Cutting Notes describe a multi-quarter program (do #2, then #1/#4
+  with #3, then #6+#7). Which is it?
+- **`Idea #1` — `rust_rename` without authorization gate** *(security-lens, anchor 100).*
+  A feature flag is a registration toggle, not authorization. Decide: per-call
+  user confirmation of the WorkspaceEdit diff, or scope-restricted by URI
+  prefix, or both? Path-traversal validation on URIs in the WorkspaceEdit?
+- **`Idea #7` — Default-on with redaction is not tractable** *(security-lens, anchor 100).*
+  Hover docs, goto-def URIs, `relatedInformation`, code-action diffs all
+  carry source. Decide: opt-in (DB only exists when explicitly enabled), or
+  enumerated allowlist of LSP response fields with a tested redactor.
+- **`Idea #4` — Push subscriptions gated on unverified MCP transport** *(adversarial + feasibility, anchor 75).*
+  rmcp 0.15 is built with `transport-io` (stdio); does Claude Code's stable
+  MCP client honor `notifications/resources/updated`? Verify before scoping
+  #4 — silently dropped subscriptions are *worse* than polling.
+- **`Idea #2` — Library-crate rationale conflates testability with platform ambitions** *(scope-guardian + product-lens, anchor 100 after cross-persona promotion).*
+  The testability case (ARCH-1) is grounded. The "alternate client
+  interfaces, polyglot LSP expansion, reuse by competitors" case is
+  speculative and adds maintenance commitment. Decide: is the core crate
+  workspace-private (unblocks tests, no semver) or published (carries
+  semver and downstream-consumer obligations)?
+- **`Cross-Cutting / #3 + #4` — sequenced "do both"; no minimal shippable unit** *(scope-guardian, anchor 75).*
+  Doing #4 alone forces a session-vs-daemon-scope choice that #3 reverses.
+  Doing #3 alone doesn't ship push diagnostics. Pick one as the minimal unit
+  or commit to both as a single program of work.
+- **`Idea #6` — Bundles three independent deliverables** *(scope-guardian, anchor 75).*
+  Homebrew tap (release pipeline), auto-allowlist (config write), JSON
+  doctor (new binary). Rejection #23 had the doctor as standalone-viable
+  before bundling. Should the doctor ship first independent of the tap and
+  allowlist?
+- **`Idea #6` — Dependency on #2 not declared** *(coherence, anchor 75).*
+  If polyglot is rejected as "depends on #2," does the doctor (which
+  consumes structured tool output) similarly benefit from #2? Either declare
+  the dependency or explain why #6 is independent.
+
+#### P2 — feasibility, security, and coherence
+
+- **`Idea #1` — Trust-boundary flip without per-tool gating mechanism** *(feasibility, anchor 75).*
+  `tools.rs` (805 LOC) registers static read-only tools. No per-tool config
+  plumbing exists today. Where does the gate live: env var, lspmux.toml
+  field, MCP capability negotiation, or a separate binary?
+- **`Idea #1` — Server vs agent applies the WorkspaceEdit** *(feasibility, anchor 75).*
+  Server-applied = atomic but touches files outside the agent's edit set.
+  Agent-applied = loses atomicity for cross-file rename. Decide once.
+- **`Idea #3` — Sessions ownership unclear (MCP shim vs lspmux daemon)** *(feasibility, anchor 75).*
+  rmcp 0.15 over stdio is one-process-one-session; `session_id` is currently
+  a telemetry env var. Reattach across Claude Code restarts requires the
+  session table to live in the long-lived lspmux daemon. Confirm and scope
+  accordingly.
+- **`Idea #5` — Upstream lspmux config supports keyed multiplex unverified** *(feasibility, anchor 75).*
+  `config/lspmux.toml` exposes a single listen/connect. Whether
+  sunshowers/lspmux supports tuple-keyed instance pools (toolchain, sysroot,
+  RUST_SRC_PATH) is not established. If it doesn't, #5 is an upstream RFC,
+  not a downstream feature.
+- **`Idea #6(a)` — Homebrew can't reproduce the fenix nightly RA pin** *(feasibility, anchor 75).*
+  Plugin currently ships a fenix-built nightly RA via `flake.nix:86` symlink.
+  Brew formula options: depend on stable rust (loses pin), download from
+  rust-lang releases (loses pin's invariants), bundle fenix-built artifact
+  via release pipeline (real release-engineering project). Pick a path
+  before claiming "Nix stays as truth, brew is the door."
+- **`Idea #2` — Confidence 95% / Complexity Low don't reflect actual scope** *(feasibility + adversarial, anchor 100).*
+  Workspace introduction + manifest moves + flake/Justfile rewires +
+  potential implicit binary-crate coupling in tools.rs (env vars, working
+  dir, launchd-injected paths). Suggested re-score: confidence 75-80%,
+  complexity Medium.
+- **`Idea #5` — Reasoned warrant uses private CLAUDE.md memory** *(adversarial + product-lens, anchor 75).*
+  "User uses git-spice per global CLAUDE.md memory" is the maintainer's
+  private config dressed as user research. Toolchain-pool half stands on
+  technical merit; worktree-overlay half needs external evidence stacked-
+  branch workflows are common.
+- **`Idea #5` — Worktree-overlay leg admits upstream blocker; toolchain-only is a different (smaller) idea** *(adversarial, anchor 75).*
+  Single confidence (70%) hides the blocker. Split into two ideas with
+  separate confidence: toolchain-pool (high, tractable) and worktree-overlay
+  (low, blocked on RA salsa exposing per-client overlays).
+- **`Idea #1` — Ranking ahead of #6 ships depth before reach (implicit identity bet)** *(product-lens, anchor 75).*
+  Doc admits reach is broken (~30 min Nix onboarding) yet ranks reach sixth.
+  Either argue why depth wins now, or reorder.
+- **`Idea #6(c)` — JSON doctor exposes paths, env vars, plist contents** *(security-lens, anchor 75).*
+  Intended UX is "paste this on a bug report." Define a field allowlist and
+  redaction pass before that UX is wired up.
+- **`Idea #6(b)` — No atomicity guarantee on settings.json merge** *(security-lens, anchor 75).*
+  Concurrent lspmux-cc starts (multiple worktrees per #5's own use case) can
+  corrupt user config via interleaved writes. Specify file locking + atomic
+  write-rename + backup.
+- **`Idea #3` — Multi-attach cross-session leakage between agent and human** *(security-lens, anchor 75).*
+  "Human + agent on same session" is a feature in current single-user-
+  trusted model. Define isolation boundaries (open documents, in-flight
+  WorkspaceEdits, diagnostic subscriptions) before #3 ships.
+- **`Verification Plan` — Tests claimed to validate #1 and #2 don't actually exist** *(coherence, anchor 75).*
+  "cargo test for parameter validation" is orthogonal to code-action
+  semantics. "Verify integration tests can now exercise tools.rs paths"
+  presupposes new tests. Specify what new tests assert.
+- **`Idea #7` — Privacy strategy ambiguous ("redaction or opt-out, rather than opt-in")** *(coherence, anchor 75).*
+  Redaction and opt-out are opposite threat models. Pick one and explain why.
+- **`Idea #5 / Verification Plan` — "same toolchain" test ambiguous** *(coherence, anchor 75).*
+  Doesn't clarify whether both legs (toolchain-pool + worktree-overlay) are
+  tested or only the simpler half.
+- **`Idea #1` — Prerequisite chain not surfaced** *(coherence, anchor 75).*
+  Cross-Cutting Notes correctly mark #2 as prerequisite for #1, but #1's
+  warrant treats AGENT-1/2 as independent urgency. Either reframe or note
+  the dependency.
+- **`Idea #6` — Dependency on #2 not declared** *(coherence, anchor 75).*
+  See P1 above; restated for cross-section traceability.
+- **`Idea #3 + #4` — Cross-dependency direction asymmetric** *(coherence, anchor 75).*
+  #4's design space depends on #3's session-vs-daemon-scope decision, but
+  #4's own description doesn't acknowledge this. Either #4 declares the
+  coupling or design space narrows to daemon-scoped only.
+- **No failure-mode analysis per idea** *(product-lens, anchor 75).*
+  Downsides catalog implementation risks, not goal-failure modes. "We ship
+  this and the user behavior we expect doesn't materialize" is unanalyzed
+  for every survivor.
+
+#### Residual concerns (no action this round, captured for traceability)
+
+- "Polyglot pivot" mentioned but never defined. *(coherence)*
+- Maintainer-as-primary-user dynamic: audience-breadth questions may be invisible from inside the project. *(product-lens)*
+- Time-bounded moat: if competitors add daemon-sharing, the differentiator evaporates. *(product-lens)*
+- Path-traversal in WorkspaceEdit URIs (idea #1 implementation detail). *(security-lens)*
+- SQLite DB permissions for #7 — world-readable on shared macOS = LSP traffic visible to other local users. *(security-lens)*
+- Homebrew signing-key management strategy unspecified. *(security-lens)*
+- Idea #7 opt-out capture may conflict with employer IP policies if distributed via Homebrew. *(scope-guardian)*
+- #6 doctor + #7 recorder commits to two stale-prone artifacts before either has demonstrated maintenance traction. *(adversarial)*
+
+#### Deferred questions (not findings, but worth surfacing)
+
+- Are we picking ideas that produce *learning*, or ideas that produce *features*? *(product-lens)*
+- What evidence would falsify the shared-daemon differentiator? *(adversarial)*
+- TCP loopback 27631 has no auth — does anything in the proposed ideas widen what an unauthenticated local connector gains? *(security-lens, FYI)*
+
