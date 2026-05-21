@@ -70,9 +70,11 @@ fi
 SERVED="$(printf '%s' "${STATUS_JSON}" \
     | jq -r '[.instances[]?.workspaceRoot.path] | unique | join(", ")')"
 
+INSTANCE_COUNT="$(printf '%s' "${STATUS_JSON}" | jq -r '.instances | length')"
+
 if [ -n "${MATCH_LINE}" ]; then
-    jq -n --arg ws "${WS}" --arg match "${MATCH_LINE}" \
-        '{"systemMessage": "Shared lspmux rust-analyzer is serving this workspace (pid \($match | split(" ")[0]), idle \($match | split(" ")[1])ms). Workspace: \($ws)\nCheck rust_server_status after MCP startup for readiness."}'
+    jq -n --arg ws "${WS}" --arg match "${MATCH_LINE}" --arg total "${INSTANCE_COUNT}" \
+        '{"systemMessage": "Shared lspmux rust-analyzer is serving this workspace (pid \($match | split(" ")[0]), idle \($match | split(" ")[1])ms). Daemon hosts \($total) workspace(s). Workspace: \($ws)\nCheck rust_server_status or rust_workspace_registry for more detail."}'
     exit 0
 fi
 

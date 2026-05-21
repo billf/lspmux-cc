@@ -159,6 +159,15 @@ impl LspClient {
         workspace_root: Option<&str>,
         env: &[(&str, &str)],
     ) -> Result<Self> {
+        // Canonicalize the workspace root before it reaches LSP `initialize`
+        // so that "/tmp/foo" and "/tmp/foo/" (or symlinked variants) don't
+        // accidentally spawn two distinct rust-analyzer instances in the
+        // upstream lspmux daemon's instance map.
+        let canonical_workspace = workspace_root
+            .and_then(|raw| std::fs::canonicalize(raw).ok())
+            .and_then(|p| p.to_str().map(ToOwned::to_owned));
+        let workspace_root = canonical_workspace.as_deref().or(workspace_root);
+
         let mut cmd = Command::new(lspmux_bin);
         cmd.arg("client")
             .arg("--server-path")

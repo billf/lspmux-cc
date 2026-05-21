@@ -92,38 +92,50 @@ write_config() {
         "${SCRIPT_DIR}/config/lspmux.toml" > "${LSPMUX_CONFIG_PATH}"
 }
 
-deploy_launchd_plist() {
-    local src="$1" label="$2"
-    local dest="${LAUNCHD_DIR}/${label}.plist"
+# Service-manager deployment (deploy_launchd_plist / deploy_systemd_units /
+# start_core_service) was removed in M5. The MCP server spawns lspmux on
+# demand. Users who explicitly want auto-start-on-login can install the
+# in-tree plist/unit themselves and set LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1.
 
-    info "Deploying launchd unit ${label}..."
-    launchctl bootout "gui/$(id -u)/${label}" 2>/dev/null || true
+cmd_migrate() {
+    info "Removing legacy lspmux service-manager units..."
+    local removed=0
 
-    sed -e "s|\${LSPMUX_BIN}|$(command -v lspmux)|g" \
-        -e "s|\${CONFIG_PATH}|${LSPMUX_CONFIG_PATH}|g" \
-        -e "s|\${LOG_DIR}|${LSPMUX_LOG_DIR}|g" \
-        "${src}" > "${dest}"
-
-    launchctl bootstrap "gui/$(id -u)" "${dest}"
-}
-
-deploy_systemd_units() {
-    info "Deploying systemd user units..."
-    sed -e "s|\${LSPMUX_BIN}|$(command -v lspmux)|g" \
-        -e "s|\${CONFIG_PATH}|${LSPMUX_CONFIG_PATH}|g" \
-        -e "s|\${LOG_DIR}|${LSPMUX_LOG_DIR}|g" \
-        "${SCRIPT_DIR}/systemd/lspmux.service" > "${SYSTEMD_USER_DIR}/lspmux.service"
-
-    systemctl --user daemon-reload
-    systemctl --user enable --now lspmux.service
-}
-
-start_core_service() {
     if [ "${OS}" = "Darwin" ]; then
-        deploy_launchd_plist "${SCRIPT_DIR}/launchd/com.lspmux.server.plist" "com.lspmux.server"
+        local label="com.lspmux.server"
+        local plist="${LAUNCHD_DIR}/${label}.plist"
+        if launchctl print "gui/$(id -u)/${label}" >/dev/null 2>&1; then
+            info "  unloading ${label}"
+            launchctl bootout "gui/$(id -u)/${label}" 2>/dev/null || true
+            removed=$((removed + 1))
+        fi
+        if [ -f "${plist}" ]; then
+            info "  removing ${plist}"
+            rm -f "${plist}"
+            removed=$((removed + 1))
+        fi
     else
-        command -v systemctl >/dev/null 2>&1 || die "systemctl is required on Linux for user-level service setup"
-        deploy_systemd_units
+        local unit="${SYSTEMD_USER_DIR}/lspmux.service"
+        if command -v systemctl >/dev/null 2>&1; then
+            if systemctl --user is-active --quiet lspmux.service 2>/dev/null; then
+                info "  disabling lspmux.service"
+                systemctl --user disable --now lspmux.service 2>/dev/null || true
+                removed=$((removed + 1))
+            fi
+        fi
+        if [ -f "${unit}" ]; then
+            info "  removing ${unit}"
+            rm -f "${unit}"
+            removed=$((removed + 1))
+        fi
+    fi
+
+    if [ "${removed}" -eq 0 ]; then
+        info "No legacy units found. Nothing to migrate."
+    else
+        info "Migration complete."
+        info "If you use nix-darwin or home-manager to install the plist, remove"
+        info "that module declaration too — this script can't manage it."
     fi
 }
 
@@ -137,6 +149,7 @@ print_core_summary() {
     echo "Config: ${LSPMUX_CONFIG_PATH}"
     echo "Socket: ${LSPMUX_SOCKET_PATH}"
     echo "Logs: ${LSPMUX_LOG_DIR}"
+    echo "Daemon model: spawned on-demand by the MCP server (no system service)."
 }
 
 cmd_core() {
@@ -146,7 +159,8 @@ cmd_core() {
     require_rust_analyzer
     install_lspmux
     write_config
-    start_core_service
+    # No service-manager deployment post-M5: the MCP server spawns lspmux
+    # on demand. Run `./setup migrate` to remove a pre-M5 install.
     print_core_summary
 }
 
@@ -285,25 +299,25 @@ cmd_doctor() {
     fi
 
     if [ -S "${LSPMUX_SOCKET_PATH}" ]; then
-        echo "  [ok] shared socket: ready"
+        echo "  [ok] shared socket: ready (daemon is up)"
     else
-        echo "  [!!] shared socket: not ready"
-        failures=$((failures + 1))
+        echo "  [--] shared socket: not present (MCP will spawn lspmux on demand)"
     fi
 
+    # Post-M5: presence of a service-manager unit is a *migration* signal,
+    # not a missing-prerequisite. Warn so the user runs `./setup migrate`.
     if [ "${OS}" = "Darwin" ]; then
-        if [ -f "${LAUNCHD_DIR}/com.lspmux.server.plist" ]; then
-            echo "  [ok] launchd unit: present"
+        if launchctl print "gui/$(id -u)/com.lspmux.server" >/dev/null 2>&1; then
+            echo "  [~~] legacy launchd unit loaded — run './setup migrate' to remove"
         else
-            echo "  [!!] launchd unit: missing"
-            failures=$((failures + 1))
+            echo "  [ok] no legacy launchd unit loaded"
         fi
     else
-        if [ -f "${SYSTEMD_USER_DIR}/lspmux.service" ]; then
-            echo "  [ok] systemd unit: present"
+        if command -v systemctl >/dev/null 2>&1 \
+            && systemctl --user is-active --quiet lspmux.service 2>/dev/null; then
+            echo "  [~~] legacy lspmux.service active — run './setup migrate' to remove"
         else
-            echo "  [!!] systemd unit: missing"
-            failures=$((failures + 1))
+            echo "  [ok] no legacy systemd unit active"
         fi
     fi
 
@@ -368,6 +382,7 @@ Usage:
   ./setup host generic-mcp
   ./setup sandbox claude-code
   ./setup doctor
+  ./setup migrate     # remove pre-M5 launchd/systemd unit
 
 Running ./setup with no arguments is equivalent to:
   ./setup core
@@ -402,6 +417,9 @@ main() {
             ;;
         doctor)
             cmd_doctor
+            ;;
+        migrate)
+            cmd_migrate
             ;;
         help|-h|--help)
             cmd_help

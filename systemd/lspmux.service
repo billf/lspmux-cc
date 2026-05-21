@@ -1,3 +1,8 @@
+# DEPRECATED in M5. The MCP server now spawns lspmux on demand. This unit
+# is kept as an opt-in template for users who explicitly want auto-start
+# behavior; install it manually with `systemctl --user enable --now` and set
+# LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1. Run `./setup migrate` to remove a
+# previously installed copy.
 [Unit]
 Description=lspmux shared Rust language service
 

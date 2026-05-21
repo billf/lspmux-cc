@@ -1,7 +1,7 @@
 # Per-worktree socket routing for multi-workspace scenarios
 
 **Date:** 2026-03-18
-**Status:** Brainstorm
+**Status:** SUPERSEDED. The post-M1 integration test (`two_worktrees_get_separate_rust_analyzers`, commit `8747518`) proved upstream lspmux already multiplexes worktrees at distinct paths correctly — two worktrees produce two rust-analyzer instances with no cross-contamination. Hash-derived per-worktree sockets are not pursued. The observability/UX goals were addressed in M4 (`rust_workspace_registry` tool) and M5 (on-demand spawn replacing the launchd assumption). See `docs/migration-m5.md`.
 **Context:** Follow-up to `docs/brainstorms/2026-02-05-lspmux-claude-code-brainstorm.md` and `docs/brainstorms/2026-03-18-observability-and-reuse-roadmap.md`
 
 ## The problem

@@ -1,7 +1,7 @@
 # lspmux-cc: LSP Multiplexing for Claude Code
 
 **Date:** 2026-02-05
-**Status:** Brainstorm
+**Status:** Brainstorm — partially superseded by M1-M5 (per-worktree investigation, observability, on-demand spawn). The architecture below predates the post-M1 finding that upstream lspmux already multiplexes worktrees correctly through one daemon. The "shared service" framing still holds; the launchd/systemd auto-start story does not. See `docs/migration-m5.md`.
 
 ## Problem
 

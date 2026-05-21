@@ -48,4 +48,4 @@ just shellcheck    # lint shell scripts
 - All Rust code: clippy with `-W clippy::nursery -W clippy::pedantic`
 - All Rust code: `cargo fmt` formatted
 - All shell scripts: pass `shellcheck`
-- macOS only (launchd, no systemd)
+- macOS-first; daemons spawned per-workspace on demand by the MCP server (no system service manager required)

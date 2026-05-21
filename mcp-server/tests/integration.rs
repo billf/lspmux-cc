@@ -301,7 +301,7 @@ async fn two_clients_share_single_rust_analyzer() {
 /// workspace and absent from the other.
 #[tokio::test]
 #[ignore = "requires lspmux + rust-analyzer binaries"]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::similar_names)]
 async fn two_worktrees_get_separate_rust_analyzers() {
     if !binary_exists("lspmux") || !binary_exists("rust-analyzer") {
         eprintln!("SKIP: lspmux and/or rust-analyzer not found on PATH");

@@ -12,7 +12,7 @@ graph LR
     CC[Claude Code] -- lspmux client --> S
     CC -. stdio .-> MCP[lspmux-cc-mcp<br/>6 MCP tools]
     MCP -- lspmux client --> S
-    S((Unix socket)) --> LS[lspmux server<br/>launchd / systemd]
+    S((Unix socket)) --> LS[lspmux server<br/>spawned on demand by MCP]
     LS --> RA[rust-analyzer]
 ```
 
@@ -32,7 +32,7 @@ cargo install --path mcp-server
 ./setup core
 ```
 
-`./setup core` installs lspmux, validates rust-analyzer is on PATH (or `RUST_ANALYZER_PATH`), writes the config, and deploys the launchd service.
+`./setup core` installs lspmux, validates rust-analyzer is on PATH (or `RUST_ANALYZER_PATH`), and writes the config. The lspmux daemon is spawned on demand by the MCP server — no launchd/systemd service is installed. Users upgrading from a pre-M5 install should run `./setup migrate` to remove the legacy unit. See [docs/migration-m5.md](docs/migration-m5.md).
 
 For Nix users: `nix build` builds everything from the flake.
 

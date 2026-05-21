@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    DEPRECATED in M5. The MCP server now spawns lspmux on demand and no
+    longer relies on launchd to auto-start the daemon. This file is kept in
+    tree as an opt-in template for users who explicitly want auto-start-on-
+    login behavior; install it manually and set LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1.
+    Run `./setup migrate` to remove a previously installed copy.
+-->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>

@@ -21,7 +21,7 @@ use rmcp::{tool, tool_router, ErrorData as McpError, Json, RoleServer};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use lspmux_cc_mcp::bootstrap::{RuntimeStatus, SERVER_NAME};
+use lspmux_cc_mcp::bootstrap::{InstanceRecord, RuntimeStatus, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::{file_uri, uri_to_path, LspClient};
 use lspmux_cc_mcp::telemetry::{
     ClientIdentity, CompilerAccountingSnapshot, ReadinessState, TelemetrySnapshot, TelemetryState,
@@ -238,6 +238,19 @@ pub struct ServerStatusResponse {
     /// Whether the daemon is serving the requested workspace. `None` when
     /// undetermined (daemon down, status output unparseable, etc.).
     pub workspace_match: Option<bool>,
+    /// PID of the rust-analyzer instance serving this workspace, if matched.
+    pub daemon_pid: Option<u32>,
+    /// Idle time in ms for the matched instance.
+    pub daemon_idle_for_ms: Option<u64>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct RegistrySnapshot {
+    /// True if `lspmux status --json` produced parseable output.
+    pub daemon_reachable: bool,
+    /// All rust-analyzer instances the lspmux daemon is currently hosting.
+    pub instances: Vec<InstanceRecord>,
     pub summary: String,
 }
 
@@ -635,11 +648,46 @@ impl RustAnalyzerTools {
             served_workspaces: self.runtime_status.served_workspaces.clone(),
             requested_workspace: self.runtime_status.requested_workspace.clone(),
             workspace_match: self.runtime_status.workspace_match,
+            daemon_pid: self.runtime_status.daemon_pid,
+            daemon_idle_for_ms: self.runtime_status.daemon_idle_for_ms,
             runtime: self.runtime_status.clone(),
             client,
             readiness,
             telemetry,
             compiler_accounting,
+            summary,
+        }))
+    }
+
+    /// Return the full lspmux instance registry — all workspaces with active
+    /// rust-analyzer instances under the daemon, with their pids, idle times,
+    /// and client counts.
+    #[tool(
+        name = "rust_workspace_registry",
+        description = "List all rust-analyzer instances the lspmux daemon is currently hosting. Each entry includes pid, workspace_root (raw + canonical), idle_for_ms, and client_count. Use this to debug which workspaces are active, find stale instances, or confirm your workspace has a dedicated rust-analyzer."
+    )]
+    async fn workspace_registry(
+        &self,
+        _params: Parameters<NoParams>,
+    ) -> Result<Json<RegistrySnapshot>, McpError> {
+        // Re-query rather than caching: the registry is dynamic (instances
+        // come and go via idle timeouts) and the user calls this tool
+        // precisely when they want current state.
+        let config = lspmux_cc_mcp::bootstrap::RuntimeConfig::discover()
+            .map_err(|e| internal_error(format!("RuntimeConfig::discover failed: {e}")))?;
+        let instances = config.discover_status().await;
+        let daemon_reachable = !instances.is_empty();
+        let summary = if daemon_reachable {
+            format!(
+                "lspmux daemon hosting {} rust-analyzer instance(s).",
+                instances.len()
+            )
+        } else {
+            "lspmux daemon unreachable or hosting no instances.".to_string()
+        };
+        Ok(Json(RegistrySnapshot {
+            daemon_reachable,
+            instances,
             summary,
         }))
     }
