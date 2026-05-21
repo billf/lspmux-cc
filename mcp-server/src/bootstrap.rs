@@ -115,6 +115,18 @@ pub struct RuntimeStatus {
     pub server_path: String,
     pub config_path: String,
     pub socket_path: String,
+    /// Canonical workspace paths the running daemon is currently serving.
+    /// Empty when the daemon is unreachable or its status output can't be parsed.
+    #[serde(default)]
+    pub served_workspaces: Vec<String>,
+    /// Canonical form of the requested `workspace_root`, when it exists on disk.
+    #[serde(default)]
+    pub requested_workspace: Option<String>,
+    /// Whether `requested_workspace` appears in `served_workspaces`. `None` when
+    /// the daemon's served workspaces couldn't be determined (e.g. daemon down,
+    /// `lspmux status --json` failed, output schema unexpected).
+    #[serde(default)]
+    pub workspace_match: Option<bool>,
 }
 
 /// Resolved runtime configuration for the MCP server.
@@ -202,18 +214,18 @@ impl RuntimeConfig {
         self.validate_prerequisites()?;
 
         if self.bootstrap_mode == BootstrapMode::Off {
-            return Ok(self.runtime_status(ServiceMode::Skipped));
+            return Ok(self.runtime_status(ServiceMode::Skipped).await);
         }
 
         if self.service_ready() {
-            return Ok(self.runtime_status(ServiceMode::Reused));
+            return Ok(self.runtime_status(ServiceMode::Reused).await);
         }
 
         if self.is_default_config_path()
             && self.try_start_via_manager().await?
             && self.wait_for_socket().await
         {
-            return Ok(self.runtime_status(ServiceMode::StartedViaManager));
+            return Ok(self.runtime_status(ServiceMode::StartedViaManager).await);
         }
 
         if self.bootstrap_mode == BootstrapMode::Require {
@@ -225,7 +237,7 @@ impl RuntimeConfig {
 
         self.start_direct_server()?;
         if self.wait_for_socket().await {
-            return Ok(self.runtime_status(ServiceMode::StartedDirectly));
+            return Ok(self.runtime_status(ServiceMode::StartedDirectly).await);
         }
 
         bail!(
@@ -234,7 +246,24 @@ impl RuntimeConfig {
         );
     }
 
-    fn runtime_status(&self, service_mode: ServiceMode) -> RuntimeStatus {
+    async fn runtime_status(&self, service_mode: ServiceMode) -> RuntimeStatus {
+        let requested_workspace = self
+            .workspace_root
+            .as_deref()
+            .and_then(canonicalize_workspace);
+        let served_workspaces = match service_mode {
+            ServiceMode::Skipped => Vec::new(),
+            _ => self.discover_served_workspaces().await,
+        };
+        let workspace_match = match (&requested_workspace, service_mode) {
+            (_, ServiceMode::Skipped) => None,
+            (Some(req), _) if !served_workspaces.is_empty() => {
+                Some(served_workspaces.iter().any(|s| s == req))
+            }
+            // No requested workspace, or daemon didn't return any served workspaces:
+            // can't make a determination.
+            _ => None,
+        };
         RuntimeStatus {
             bootstrap_mode: self.bootstrap_mode,
             service_mode,
@@ -242,7 +271,32 @@ impl RuntimeConfig {
             server_path: self.server_path.clone(),
             config_path: self.config_path.clone(),
             socket_path: self.socket_path.clone(),
+            served_workspaces,
+            requested_workspace,
+            workspace_match,
         }
+    }
+
+    /// Ask the running lspmux daemon which workspaces it currently serves.
+    ///
+    /// Shells out to `lspmux status --json` and extracts canonicalized workspace
+    /// roots from `instances[].workspaceRoot.path`. Failure is non-fatal: any
+    /// error (process exit, JSON parse, unexpected schema) returns an empty
+    /// vector so the caller can fall back to `workspace_match = None`.
+    async fn discover_served_workspaces(&self) -> Vec<String> {
+        let output = match Command::new(&self.lspmux_path)
+            .arg("status")
+            .arg("--json")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => output,
+            _ => return Vec::new(),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_served_workspaces(&stdout)
     }
 
     fn validate_prerequisites(&self) -> Result<()> {
@@ -394,6 +448,39 @@ fn default_config_path(base_dirs: Option<&BaseDirs>, home: &str) -> String {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+/// Canonicalize a workspace path. Returns `None` when the path doesn't exist
+/// or isn't convertible to UTF-8.
+fn canonicalize_workspace(raw: &str) -> Option<String> {
+    fs::canonicalize(raw)
+        .ok()
+        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+}
+
+/// Extract canonical workspace roots from `lspmux status --json` output.
+///
+/// Defensive against schema drift: every field is optional. Returns an empty
+/// vector when the JSON can't be parsed or no `instances[]` array is present.
+/// Each found `workspaceRoot.path` is canonicalized; paths that no longer
+/// resolve are skipped.
+fn parse_served_workspaces(json: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(instances) = value.get("instances").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    instances
+        .iter()
+        .filter_map(|instance| {
+            instance
+                .get("workspaceRoot")
+                .and_then(|wr| wr.get("path"))
+                .and_then(|p| p.as_str())
+                .and_then(canonicalize_workspace)
+        })
+        .collect()
 }
 
 fn default_socket_path(
@@ -626,5 +713,82 @@ connect = ["127.0.0.1", 27631]
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         assert!(!tcp_is_ready("127.0.0.1", port));
+    }
+
+    #[test]
+    fn parse_served_workspaces_extracts_paths_from_live_schema() {
+        // Fixture copied from real `lspmux status --json` output. Uses /tmp so
+        // canonicalize succeeds in CI; the schema shape is the load-bearing bit.
+        let tmpdir = tempfile::tempdir().unwrap();
+        let ws_a = tmpdir.path().join("wt-a");
+        let ws_b = tmpdir.path().join("wt-b");
+        std::fs::create_dir(&ws_a).unwrap();
+        std::fs::create_dir(&ws_b).unwrap();
+        let json = format!(
+            r#"{{
+                "instances": [
+                    {{
+                        "pid": 81886,
+                        "workspaceRoot": {{ "path": {:?}, "deviceId": 1, "fileId": 2 }},
+                        "idleFor": 100,
+                        "clients": []
+                    }},
+                    {{
+                        "pid": 31630,
+                        "workspaceRoot": {{ "path": {:?} }},
+                        "clients": []
+                    }}
+                ]
+            }}"#,
+            ws_a.to_str().unwrap(),
+            ws_b.to_str().unwrap()
+        );
+        let got = parse_served_workspaces(&json);
+        assert_eq!(got.len(), 2);
+        let canon_a = std::fs::canonicalize(&ws_a)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(got.contains(&canon_a), "expected {canon_a:?} in {got:?}");
+    }
+
+    #[test]
+    fn parse_served_workspaces_returns_empty_for_malformed_json() {
+        assert!(parse_served_workspaces("not json").is_empty());
+        assert!(parse_served_workspaces("{}").is_empty());
+        assert!(parse_served_workspaces(r#"{"instances": "wrong type"}"#).is_empty());
+    }
+
+    #[test]
+    fn parse_served_workspaces_skips_instances_missing_workspace_root() {
+        let json = r#"{"instances": [{"pid": 1}, {"workspaceRoot": {}}]}"#;
+        assert!(parse_served_workspaces(json).is_empty());
+    }
+
+    #[test]
+    fn canonicalize_workspace_returns_none_for_missing_path() {
+        assert!(canonicalize_workspace("/nonexistent/path/xyzzy").is_none());
+    }
+
+    #[test]
+    fn canonicalize_workspace_resolves_existing_dir() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let raw = tmpdir.path().to_str().unwrap();
+        let canon = canonicalize_workspace(raw).unwrap();
+        // Result should be canonical (idempotent under a second pass).
+        assert_eq!(canonicalize_workspace(&canon).unwrap(), canon);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalize_workspace_resolves_symlinks() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let target = tmpdir.path().join("real");
+        let link = tmpdir.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let canon_target = canonicalize_workspace(target.to_str().unwrap()).unwrap();
+        let canon_link = canonicalize_workspace(link.to_str().unwrap()).unwrap();
+        assert_eq!(canon_target, canon_link);
     }
 }

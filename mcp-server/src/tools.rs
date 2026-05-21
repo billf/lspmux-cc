@@ -230,6 +230,14 @@ pub struct ServerStatusResponse {
     pub readiness: ReadinessState,
     pub telemetry: TelemetrySnapshot,
     pub compiler_accounting: CompilerAccountingSnapshot,
+    /// Canonical workspace paths the running daemon currently serves.
+    /// Mirrors `runtime.served_workspaces` at the top level for discoverability.
+    pub served_workspaces: Vec<String>,
+    /// Canonical form of the requested workspace, when resolvable.
+    pub requested_workspace: Option<String>,
+    /// Whether the daemon is serving the requested workspace. `None` when
+    /// undetermined (daemon down, status output unparseable, etc.).
+    pub workspace_match: Option<bool>,
     pub summary: String,
 }
 
@@ -605,8 +613,14 @@ impl RustAnalyzerTools {
         let telemetry = self.telemetry.snapshot();
         let client = self.telemetry.client_identity();
         let compiler_accounting = self.telemetry.compiler_accounting_snapshot();
+        let workspace_match_str = match self.runtime_status.workspace_match {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        };
         let summary = format!(
-            "{SERVER_NAME} liveness: {server_status}; readiness: {}; workspace root: {}",
+            "{SERVER_NAME} liveness: {server_status}; readiness: {}; workspace root: {}; \
+             workspace match: {workspace_match_str}",
             readiness.health,
             workspace_root
                 .clone()
@@ -618,6 +632,9 @@ impl RustAnalyzerTools {
             server_status: server_status.to_string(),
             workspace_root,
             server_version,
+            served_workspaces: self.runtime_status.served_workspaces.clone(),
+            requested_workspace: self.runtime_status.requested_workspace.clone(),
+            workspace_match: self.runtime_status.workspace_match,
             runtime: self.runtime_status.clone(),
             client,
             readiness,

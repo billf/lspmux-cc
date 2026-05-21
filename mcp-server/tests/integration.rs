@@ -112,8 +112,8 @@ fn write_lspmux_config(home_dir: &Path, port: u16) {
     std::fs::create_dir_all(&config_dir).expect("failed to create config dir");
 
     let config_content = format!(
-        r#"listen = "127.0.0.1:{port}"
-connect = "127.0.0.1:{port}"
+        r#"listen = ["127.0.0.1", {port}]
+connect = ["127.0.0.1", {port}]
 "#
     );
     std::fs::write(config_dir.join("config.toml"), config_content)
@@ -291,4 +291,146 @@ async fn two_clients_share_single_rust_analyzer() {
     client_a.shutdown().await;
     client_b.shutdown().await;
     let _ = server_proc.kill().await;
+}
+
+/// Two LSP clients with **different workspace roots** must see **different content**.
+///
+/// Proves the M1-gate question: when two worktrees (different paths, different
+/// file contents) connect to the same lspmux daemon, each rust-analyzer instance
+/// sees only its own files. Asserted via a marker symbol present in one
+/// workspace and absent from the other.
+#[tokio::test]
+#[ignore = "requires lspmux + rust-analyzer binaries"]
+#[allow(clippy::too_many_lines)]
+async fn two_worktrees_get_separate_rust_analyzers() {
+    if !binary_exists("lspmux") || !binary_exists("rust-analyzer") {
+        eprintln!("SKIP: lspmux and/or rust-analyzer not found on PATH");
+        return;
+    }
+    let lspmux_bin = "lspmux";
+    let ra_bin = "rust-analyzer";
+
+    // ── Isolated lspmux daemon ──────────────────────────────────────────
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let fake_home = tmp.path();
+    let port = find_free_port();
+    write_lspmux_config(fake_home, port);
+    let home_str = fake_home.to_str().expect("home utf8");
+    let env = [("HOME", home_str)];
+
+    let mut server_proc = Command::new(lspmux_bin)
+        .arg("server")
+        .env("HOME", home_str)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn lspmux server");
+    assert!(wait_for_port(port, 10).await, "lspmux server didn't listen");
+
+    // ── Two minimal Rust crates, each with a unique marker symbol ───────
+    let wt_a = tmp.path().join("wt-a");
+    let wt_b = tmp.path().join("wt-b");
+    write_minimal_crate(&wt_a, "wt_a_marker", "MARKER_A_ONLY_SYMBOL");
+    write_minimal_crate(&wt_b, "wt_b_marker", "MARKER_B_ONLY_SYMBOL");
+
+    let wt_a_str = wt_a.to_str().expect("wt-a utf8");
+    let wt_b_str = wt_b.to_str().expect("wt-b utf8");
+
+    let client_a = LspClient::new_with_env(lspmux_bin, ra_bin, Some(wt_a_str), &env)
+        .await
+        .expect("client A");
+    let client_b = LspClient::new_with_env(lspmux_bin, ra_bin, Some(wt_b_str), &env)
+        .await
+        .expect("client B");
+
+    // Open each crate's lib.rs so rust-analyzer is forced to load the workspace.
+    let lib_a = wt_a.join("src/lib.rs");
+    let lib_b = wt_b.join("src/lib.rs");
+    client_a
+        .ensure_file_open(lib_a.to_str().unwrap())
+        .await
+        .expect("open A");
+    client_b
+        .ensure_file_open(lib_b.to_str().unwrap())
+        .await
+        .expect("open B");
+
+    // Give rust-analyzer time to index. Two cold Cargo workspaces under a
+    // shared sccache + nix-store toolchain typically settle within ~10s.
+    sleep(Duration::from_secs(10)).await;
+
+    // ── Symmetric symbol probe ──────────────────────────────────────────
+    let a_sees_a = count_symbol_hits(&client_a, "MARKER_A_ONLY_SYMBOL").await;
+    let a_sees_b = count_symbol_hits(&client_a, "MARKER_B_ONLY_SYMBOL").await;
+    let b_sees_a = count_symbol_hits(&client_b, "MARKER_A_ONLY_SYMBOL").await;
+    let b_sees_b = count_symbol_hits(&client_b, "MARKER_B_ONLY_SYMBOL").await;
+
+    assert!(
+        a_sees_a >= 1,
+        "workspace A should see its own marker, got {a_sees_a}"
+    );
+    assert!(
+        b_sees_b >= 1,
+        "workspace B should see its own marker, got {b_sees_b}"
+    );
+    assert_eq!(
+        a_sees_b, 0,
+        "workspace A must NOT see B's marker (cross-contamination), got {a_sees_b}"
+    );
+    assert_eq!(
+        b_sees_a, 0,
+        "workspace B must NOT see A's marker (cross-contamination), got {b_sees_a}"
+    );
+
+    // ── Daemon-side: two distinct rust-analyzer children ────────────────
+    let server_pid = server_proc.id().expect("server pid");
+    let ra_children = count_direct_children_named(server_pid, "rust-analyzer");
+    assert_eq!(
+        ra_children, 2,
+        "expected two rust-analyzer children (one per worktree), found {ra_children}"
+    );
+
+    client_a.shutdown().await;
+    client_b.shutdown().await;
+    let _ = server_proc.kill().await;
+}
+
+/// Write a minimal Cargo crate at `root` with a single library function whose
+/// name contains `marker`. The crate name is `pkg_name` so two crates can
+/// coexist without name collisions in the global Cargo cache.
+fn write_minimal_crate(root: &Path, pkg_name: &str, marker: &str) {
+    std::fs::create_dir_all(root.join("src")).expect("create src dir");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "{pkg_name}"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#
+        ),
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(
+        root.join("src/lib.rs"),
+        format!("pub fn {marker}() -> u32 {{ 42 }}\n"),
+    )
+    .expect("write lib.rs");
+}
+
+/// Issue a `workspace/symbol` query and return the number of matching results.
+async fn count_symbol_hits(client: &LspClient, query: &str) -> usize {
+    match client.workspace_symbols(query).await {
+        Ok(Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols))) => symbols
+            .into_iter()
+            .filter(|s| s.name.contains(query))
+            .count(),
+        Ok(Some(lsp_types::WorkspaceSymbolResponse::Nested(symbols))) => symbols
+            .into_iter()
+            .filter(|s| s.name.contains(query))
+            .count(),
+        _ => 0,
+    }
 }
