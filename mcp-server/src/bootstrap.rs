@@ -591,29 +591,35 @@ async fn detect_legacy_service_manager() -> bool {
     {
         let uid = nix_like_uid();
         let target = format!("gui/{uid}/com.lspmux.server");
-        let status = Command::new("launchctl")
+        let invocation = Command::new("launchctl")
             .arg("print")
             .arg(&target)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        return matches!(status, Ok(s) if s.success());
+            .status();
+        let Ok(status) = tokio::time::timeout(Duration::from_secs(2), invocation).await else {
+            return false;
+        };
+        matches!(status, Ok(s) if s.success())
     }
 
     #[cfg(target_os = "linux")]
     {
-        let status = Command::new("systemctl")
+        let invocation = Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", "lspmux.service"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        return matches!(status, Ok(s) if s.success());
+            .status();
+        let Ok(status) = tokio::time::timeout(Duration::from_secs(2), invocation).await else {
+            return false;
+        };
+        matches!(status, Ok(s) if s.success())
     }
 
-    #[allow(unreachable_code)]
-    false
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
 }
 
 fn tcp_is_ready(host: &str, port: u16) -> bool {
@@ -905,14 +911,13 @@ connect = ["127.0.0.1", 27631]
 
     #[tokio::test]
     async fn detect_legacy_service_manager_returns_false_for_missing_unit() {
-        // On a clean Mac with no com.lspmux.server loaded (or Linux with no
-        // lspmux.service active), this must be false. The function is
-        // best-effort — any failure path also returns false, which is what
-        // we want for migration-guidance purposes.
-        // We can't reliably assert "no legacy unit exists" on every machine,
-        // so just verify the call returns a bool and doesn't panic. The
-        // negative case is exercised in CI where no unit is installed.
-        let _detected: bool = detect_legacy_service_manager().await;
+        // On CI without a legacy launchd/systemd unit, this is deterministic.
+        // Local devs who happen to have com.lspmux.server loaded will see this
+        // fail with a clear message rather than a silent pass.
+        assert!(
+            !detect_legacy_service_manager().await,
+            "expected no legacy lspmux service-manager unit; install ./setup migrate to remove one"
+        );
     }
 
     #[cfg(unix)]
