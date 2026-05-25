@@ -44,6 +44,8 @@ export LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1
 
 Without `LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1`, the MCP server ignores any service-manager units and always uses the on-demand path.
 
+`LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1` only takes effect when the lspmux config file lives at the platform default location (`~/Library/Application Support/lspmux/config.toml` on macOS, `~/.config/lspmux/config.toml` on Linux). If you set a custom `LSPMUX_CONFIG_PATH`, the service-manager bootstrap won't fire — you need both the env var AND the default config path. Otherwise the MCP server falls through to on-demand spawn.
+
 ## Nix-darwin / home-manager users
 
 If your Nix configuration declares the plist (e.g. `launchd.user.agents.lspmux`), `./setup migrate` will remove the deployed file, but Nix will reinstall it on the next system rebuild. Remove the declaration from your Nix config too.
