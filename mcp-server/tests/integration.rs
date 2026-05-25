@@ -354,9 +354,22 @@ async fn two_worktrees_get_separate_rust_analyzers() {
         .await
         .expect("open B");
 
-    // Give rust-analyzer time to index. Two cold Cargo workspaces under a
-    // shared sccache + nix-store toolchain typically settle within ~10s.
-    sleep(Duration::from_secs(10)).await;
+    // Poll until both workspaces' markers are indexed, rather than guess at
+    // an indexing budget. Two cold Cargo workspaces under a shared sccache +
+    // nix-store toolchain typically settle within ~10s.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let a_sees_a = count_symbol_hits(&client_a, "MARKER_A_ONLY_SYMBOL").await;
+        let b_sees_b = count_symbol_hits(&client_b, "MARKER_B_ONLY_SYMBOL").await;
+        if a_sees_a >= 1 && b_sees_b >= 1 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "rust-analyzer did not index both workspaces within 30s"
+        );
+        sleep(Duration::from_millis(500)).await;
+    }
 
     // ── Symmetric symbol probe ──────────────────────────────────────────
     let a_sees_a = count_symbol_hits(&client_a, "MARKER_A_ONLY_SYMBOL").await;
