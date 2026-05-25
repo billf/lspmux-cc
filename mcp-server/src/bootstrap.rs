@@ -294,7 +294,7 @@ impl RuntimeConfig {
             .and_then(canonicalize_workspace);
         let instances = match service_mode {
             ServiceMode::Skipped => Vec::new(),
-            _ => self.discover_status().await,
+            _ => self.discover_status().await.unwrap_or_default(),
         };
         let matched_instance = requested_workspace.as_ref().and_then(|req| {
             instances
@@ -343,23 +343,28 @@ impl RuntimeConfig {
 
     /// Ask the running lspmux daemon for its full instance list.
     ///
-    /// Shells out to `lspmux status --json` and parses `instances[]`. Failure
-    /// is non-fatal: any error (process exit, JSON parse, unexpected schema)
-    /// returns an empty vector so callers can treat the state as "unknown."
-    pub async fn discover_status(&self) -> Vec<InstanceRecord> {
-        let output = match Command::new(&self.lspmux_path)
+    /// Shells out to `lspmux status --json` and parses `instances[]`.
+    ///
+    /// Returns:
+    /// - `None` when the daemon is unreachable: the `lspmux status` command
+    ///   failed to spawn, exited non-zero, timed out, or its output couldn't
+    ///   be parsed.
+    /// - `Some(vec)` when the daemon responded; the vector is the parsed
+    ///   `instances[]`. An empty vector is the valid "daemon up but hosting
+    ///   no instances" case — distinct from "daemon down."
+    pub async fn discover_status(&self) -> Option<Vec<InstanceRecord>> {
+        let invocation = Command::new(&self.lspmux_path)
             .arg("status")
             .arg("--json")
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => output,
-            _ => return Vec::new(),
+            .output();
+        let output = match tokio::time::timeout(Duration::from_secs(2), invocation).await {
+            Ok(Ok(output)) if output.status.success() => output,
+            _ => return None,
         };
         let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_status_instances(&stdout)
+        Some(parse_status_instances(&stdout))
     }
 
     fn validate_prerequisites(&self) -> Result<()> {

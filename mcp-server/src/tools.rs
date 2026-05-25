@@ -230,18 +230,6 @@ pub struct ServerStatusResponse {
     pub readiness: ReadinessState,
     pub telemetry: TelemetrySnapshot,
     pub compiler_accounting: CompilerAccountingSnapshot,
-    /// Canonical workspace paths the running daemon currently serves.
-    /// Mirrors `runtime.served_workspaces` at the top level for discoverability.
-    pub served_workspaces: Vec<String>,
-    /// Canonical form of the requested workspace, when resolvable.
-    pub requested_workspace: Option<String>,
-    /// Whether the daemon is serving the requested workspace. `None` when
-    /// undetermined (daemon down, status output unparseable, etc.).
-    pub workspace_match: Option<bool>,
-    /// PID of the rust-analyzer instance serving this workspace, if matched.
-    pub daemon_pid: Option<u32>,
-    /// Idle time in ms for the matched instance.
-    pub daemon_idle_for_ms: Option<u64>,
     pub summary: String,
 }
 
@@ -251,6 +239,9 @@ pub struct RegistrySnapshot {
     pub daemon_reachable: bool,
     /// All rust-analyzer instances the lspmux daemon is currently hosting.
     pub instances: Vec<InstanceRecord>,
+    /// Number of rust-analyzer instances the daemon is hosting. Zero is
+    /// meaningful only when `daemon_reachable` is true.
+    pub instance_count: usize,
     pub summary: String,
 }
 
@@ -291,6 +282,7 @@ pub struct RustAnalyzerTools {
     lsp: Arc<LspClient>,
     runtime_status: RuntimeStatus,
     telemetry: TelemetryState,
+    config: lspmux_cc_mcp::bootstrap::RuntimeConfig,
     tool_router: ToolRouter<Self>,
 }
 
@@ -301,11 +293,13 @@ impl RustAnalyzerTools {
         lsp: Arc<LspClient>,
         runtime_status: RuntimeStatus,
         telemetry: TelemetryState,
+        config: lspmux_cc_mcp::bootstrap::RuntimeConfig,
     ) -> Self {
         Self {
             lsp,
             runtime_status,
             telemetry,
+            config,
             tool_router: Self::tool_router(),
         }
     }
@@ -645,11 +639,6 @@ impl RustAnalyzerTools {
             server_status: server_status.to_string(),
             workspace_root,
             server_version,
-            served_workspaces: self.runtime_status.served_workspaces.clone(),
-            requested_workspace: self.runtime_status.requested_workspace.clone(),
-            workspace_match: self.runtime_status.workspace_match,
-            daemon_pid: self.runtime_status.daemon_pid,
-            daemon_idle_for_ms: self.runtime_status.daemon_idle_for_ms,
             runtime: self.runtime_status.clone(),
             client,
             readiness,
@@ -673,21 +662,23 @@ impl RustAnalyzerTools {
         // Re-query rather than caching: the registry is dynamic (instances
         // come and go via idle timeouts) and the user calls this tool
         // precisely when they want current state.
-        let config = lspmux_cc_mcp::bootstrap::RuntimeConfig::discover()
-            .map_err(|e| internal_error(format!("RuntimeConfig::discover failed: {e}")))?;
-        let instances = config.discover_status().await;
-        let daemon_reachable = !instances.is_empty();
+        let instances_opt = self.config.discover_status().await;
+        let daemon_reachable = instances_opt.is_some();
+        let instances = instances_opt.unwrap_or_default();
+        let instance_count = instances.len();
         let summary = if daemon_reachable {
-            format!(
-                "lspmux daemon hosting {} rust-analyzer instance(s).",
-                instances.len()
-            )
+            if instance_count > 0 {
+                format!("lspmux daemon hosting {instance_count} rust-analyzer instance(s).")
+            } else {
+                "lspmux daemon reachable, hosting no instances.".to_string()
+            }
         } else {
-            "lspmux daemon unreachable or hosting no instances.".to_string()
+            "lspmux daemon unreachable.".to_string()
         };
         Ok(Json(RegistrySnapshot {
             daemon_reachable,
             instances,
+            instance_count,
             summary,
         }))
     }

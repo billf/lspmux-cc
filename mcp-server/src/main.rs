@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
     .context("failed to initialize LSP client")?;
 
     let lsp = Arc::new(lsp);
-    let tools = RustAnalyzerTools::new(Arc::clone(&lsp), runtime_status, telemetry);
+    let tools = RustAnalyzerTools::new(Arc::clone(&lsp), runtime_status, telemetry, runtime);
     let server = LspmuxMcpServer { tools };
 
     // Start MCP server on stdio
