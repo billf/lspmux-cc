@@ -40,6 +40,12 @@ Check server health and confirm the active workspace root.
 rust_server_status()
 ```
 
+### `rust_workspace_registry`
+List all rust-analyzer instances the lspmux daemon is currently hosting (pid, workspace, idle time, client count). Use to debug workspace mismatches or confirm your workspace has a dedicated rust-analyzer.
+```
+rust_workspace_registry()
+```
+
 ## Notes
 
 - All file paths must be absolute.

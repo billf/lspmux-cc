@@ -2,7 +2,7 @@
 name: diagnose-lspmux
 description: Diagnose lspmux rust-analyzer connection issues. Use when MCP tools fail, rust_server_status shows errors, or rust-analyzer seems unresponsive.
 disable-model-invocation: true
-allowed-tools: Read, lspmux-rust-analyzer:rust_server_status, lspmux-rust-analyzer:rust_diagnostics
+allowed-tools: Read, lspmux-rust-analyzer:rust_server_status, lspmux-rust-analyzer:rust_diagnostics, lspmux-rust-analyzer:rust_workspace_registry
 ---
 
 # Diagnose lspmux
@@ -31,8 +31,13 @@ Call `lspmux-rust-analyzer:rust_server_status()`.
 
 - If the call fails entirely: MCP server isn't connected. The problem is upstream (sandbox, service not running, plugin not installed). Return to Step 0 findings.
 - If `server_status` is `"error"`: read the error message. Common causes: lspmux binary missing, config missing, socket unreachable.
-- If `server_status` is `"ok"` and `service_mode` is `"reused"`: the shared service is working. Proceed to Step 2.
-- If `service_mode` is `"started_directly"`: the shared service wasn't available and a direct instance was spawned. This works but doesn't share with other editors. Suggest running `./setup core`.
+- If `service_mode` is `"reused"` or `"started_directly"`: the M5-expected happy path. The MCP runtime either reused a running daemon or spawned one on demand. Proceed to Step 1.5.
+- If `service_mode` is `"skipped"`: bootstrap was disabled by env (`LSPMUX_BOOTSTRAP=off`). If that wasn't intentional, unset the env var.
+- If `legacy_global_daemon_detected` is `true`: a pre-M5 launchd plist or systemd unit is still loaded and will race the on-demand daemon. Run `./setup migrate` to remove it.
+
+## Step 1.5: Workspace match
+
+If `workspace_match` is `false` or `None`, call `lspmux-rust-analyzer:rust_workspace_registry()` to see which workspaces the daemon is actually serving. Use the result to decide whether to wait for the rust-analyzer instance to spawn (it's lazy — first request to a workspace triggers it) or to change `WORKSPACE_ROOT` to a path the daemon already serves.
 
 ## Step 2: Pipeline test
 

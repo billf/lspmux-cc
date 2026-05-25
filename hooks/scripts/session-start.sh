@@ -87,5 +87,5 @@ if [ -z "${WS_CANON}" ]; then
 fi
 
 jq -n --arg ws "${WS_CANON}" --arg served "${SERVED}" \
-    '{"systemMessage": "WARNING: lspmux is running but is NOT yet serving this workspace. Currently serving: \($served). The MCP runtime will spin up a rust-analyzer for \($ws) on first request."}'
+    '{"systemMessage": "WARNING: lspmux is running but is NOT yet serving this workspace. Currently serving: \($served). The MCP runtime will spin up a rust-analyzer for \($ws) on first request. Check rust_workspace_registry for the daemon'\''s full instance list."}'
 exit 0
