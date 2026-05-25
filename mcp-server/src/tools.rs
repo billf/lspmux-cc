@@ -620,7 +620,24 @@ impl RustAnalyzerTools {
         let telemetry = self.telemetry.snapshot();
         let client = self.telemetry.client_identity();
         let compiler_accounting = self.telemetry.compiler_accounting_snapshot();
-        let workspace_match_str = match self.runtime_status.workspace_match {
+        // Refresh workspace-status fields by querying the daemon now. The
+        // runtime_status snapshot was taken at MCP startup, before the
+        // LspClient sent `initialize` and the daemon spawned an instance
+        // for this workspace — in the cold-start path that snapshot's
+        // workspace_match is stale by the time the tool is called.
+        let fields = self
+            .config
+            .refresh_workspace_fields(self.runtime_status.service_mode)
+            .await;
+        let runtime = lspmux_cc_mcp::bootstrap::RuntimeStatus {
+            served_workspaces: fields.served_workspaces,
+            requested_workspace: fields.requested_workspace,
+            workspace_match: fields.workspace_match,
+            daemon_pid: fields.daemon_pid,
+            daemon_idle_for_ms: fields.daemon_idle_for_ms,
+            ..self.runtime_status.clone()
+        };
+        let workspace_match_str = match runtime.workspace_match {
             Some(true) => "true",
             Some(false) => "false",
             None => "unknown",
@@ -639,7 +656,7 @@ impl RustAnalyzerTools {
             server_status: server_status.to_string(),
             workspace_root,
             server_version,
-            runtime: self.runtime_status.clone(),
+            runtime,
             client,
             readiness,
             telemetry,

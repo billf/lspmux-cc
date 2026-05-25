@@ -128,6 +128,21 @@ pub struct InstanceRecord {
     pub client_count: usize,
 }
 
+/// Dynamic workspace-status fields recomputed per status query.
+///
+/// `RuntimeStatus` carries both static (path-resolved-at-startup) and
+/// dynamic (daemon-state-now) fields. This struct isolates the dynamic
+/// half so the MCP `rust_server_status` tool can refresh just those
+/// fields per call without rebuilding the whole `RuntimeStatus`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceFields {
+    pub served_workspaces: Vec<String>,
+    pub requested_workspace: Option<String>,
+    pub workspace_match: Option<bool>,
+    pub daemon_pid: Option<u32>,
+    pub daemon_idle_for_ms: Option<u64>,
+}
+
 /// Runtime status surfaced through the MCP status tool.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct RuntimeStatus {
@@ -287,7 +302,14 @@ impl RuntimeConfig {
         );
     }
 
-    async fn runtime_status(&self, service_mode: ServiceMode) -> RuntimeStatus {
+    /// Compute the dynamic workspace-status fields by querying the daemon now.
+    ///
+    /// Used by both startup-time `runtime_status` and per-call refresh from
+    /// the `rust_server_status` MCP tool. The MCP tool's caller wants current
+    /// state — after the `LspClient` connects and the daemon spawns an instance
+    /// for the workspace — not the bootstrap snapshot, which can lag by the
+    /// LSP handshake duration.
+    pub async fn refresh_workspace_fields(&self, service_mode: ServiceMode) -> WorkspaceFields {
         let requested_workspace = self
             .workspace_root
             .as_deref()
@@ -314,7 +336,17 @@ impl RuntimeConfig {
             .into_iter()
             .filter_map(|i| i.canonical_workspace_root)
             .collect();
+        WorkspaceFields {
+            served_workspaces,
+            requested_workspace,
+            workspace_match,
+            daemon_pid,
+            daemon_idle_for_ms,
+        }
+    }
 
+    async fn runtime_status(&self, service_mode: ServiceMode) -> RuntimeStatus {
+        let fields = self.refresh_workspace_fields(service_mode).await;
         let legacy_global_daemon_detected = detect_legacy_service_manager().await;
         let status = RuntimeStatus {
             bootstrap_mode: self.bootstrap_mode,
@@ -323,11 +355,11 @@ impl RuntimeConfig {
             server_path: self.server_path.clone(),
             config_path: self.config_path.clone(),
             socket_path: self.socket_path.clone(),
-            served_workspaces,
-            requested_workspace,
-            workspace_match,
-            daemon_pid,
-            daemon_idle_for_ms,
+            served_workspaces: fields.served_workspaces,
+            requested_workspace: fields.requested_workspace,
+            workspace_match: fields.workspace_match,
+            daemon_pid: fields.daemon_pid,
+            daemon_idle_for_ms: fields.daemon_idle_for_ms,
             legacy_global_daemon_detected,
         };
         tracing::info!(
