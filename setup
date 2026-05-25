@@ -117,7 +117,12 @@ cmd_migrate() {
     else
         local unit="${SYSTEMD_USER_DIR}/lspmux.service"
         if command -v systemctl >/dev/null 2>&1; then
-            if systemctl --user is-active --quiet lspmux.service 2>/dev/null; then
+            # Gate on is-enabled or is-active rather than is-active alone:
+            # an enabled-but-stopped (or failed) pre-M5 unit otherwise leaves
+            # a dangling default.target.wants/lspmux.service symlink that
+            # reloads or fails on the next user session.
+            if systemctl --user is-enabled --quiet lspmux.service 2>/dev/null \
+                || systemctl --user is-active --quiet lspmux.service 2>/dev/null; then
                 info "  disabling lspmux.service"
                 systemctl --user disable --now lspmux.service 2>/dev/null || true
                 removed=$((removed + 1))
