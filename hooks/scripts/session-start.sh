@@ -42,7 +42,7 @@ fi
 # Probe the daemon. `lspmux status` exits non-zero when the daemon is down;
 # `--json` emits {"instances":[...]} otherwise. Defensive parsing throughout —
 # unknown schema is treated the same as daemon-down.
-STATUS_JSON="$("${LSPMUX_BIN}" status --json 2>/dev/null || true)"
+STATUS_JSON="$(timeout 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
 DAEMON_UP=0
 if [ -n "${STATUS_JSON}" ] && printf '%s' "${STATUS_JSON}" | jq -e '.instances' >/dev/null 2>&1; then
     DAEMON_UP=1
