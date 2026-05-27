@@ -390,6 +390,7 @@ impl RuntimeConfig {
             .arg("--json")
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
             .output();
         let output = match tokio::time::timeout(Duration::from_secs(2), invocation).await {
             Ok(Ok(output)) if output.status.success() => output,
@@ -633,6 +634,7 @@ async fn detect_legacy_service_manager() -> bool {
             .arg(&target)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
             .status();
         let Ok(status) = tokio::time::timeout(Duration::from_secs(2), invocation).await else {
             return false;
@@ -646,6 +648,7 @@ async fn detect_legacy_service_manager() -> bool {
             .args(["--user", "is-active", "--quiet", "lspmux.service"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
             .status();
         let Ok(status) = tokio::time::timeout(Duration::from_secs(2), invocation).await else {
             return false;
@@ -660,11 +663,12 @@ async fn detect_legacy_service_manager() -> bool {
 }
 
 fn tcp_is_ready(host: &str, port: u16) -> bool {
-    TcpStream::connect_timeout(
-        &format!("{host}:{port}").parse().unwrap(),
-        StdDuration::from_millis(500),
-    )
-    .is_ok()
+    // `SocketAddr::from_str` does not resolve hostnames, so a non-IP `host`
+    // (e.g. `localhost`) yields `None` rather than panicking on `.unwrap()`.
+    let Ok(addr) = format!("{host}:{port}").parse() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, StdDuration::from_millis(500)).is_ok()
 }
 
 fn socket_is_ready(path: &str) -> bool {
@@ -869,6 +873,14 @@ connect = ["127.0.0.1", 27631]
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         assert!(!tcp_is_ready("127.0.0.1", port));
+    }
+
+    #[test]
+    fn tcp_is_ready_returns_false_for_unresolvable_host() {
+        // A non-IP host can reach `tcp_is_ready` via `parse_connect_string`
+        // (e.g. `connect = "localhost:27631"`). It must report not-ready, not
+        // panic on `SocketAddr::from_str`.
+        assert!(!tcp_is_ready("localhost", 27631));
     }
 
     #[test]
