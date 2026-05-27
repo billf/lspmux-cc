@@ -42,7 +42,18 @@ fi
 # Probe the daemon. `lspmux status` exits non-zero when the daemon is down;
 # `--json` emits {"instances":[...]} otherwise. Defensive parsing throughout —
 # unknown schema is treated the same as daemon-down.
-STATUS_JSON="$(timeout 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
+# `timeout` is GNU coreutils; stock macOS lacks it (ships as `gtimeout` via
+# Homebrew/nix coreutils). Fall back to an unwrapped call so the probe still
+# runs rather than silently failing and always reporting daemon-down.
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="timeout 3"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="gtimeout 3"
+else
+    TIMEOUT_CMD=""
+fi
+# shellcheck disable=SC2086
+STATUS_JSON="$(${TIMEOUT_CMD} "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
 DAEMON_UP=0
 if [ -n "${STATUS_JSON}" ] && printf '%s' "${STATUS_JSON}" | jq -e '.instances' >/dev/null 2>&1; then
     DAEMON_UP=1
