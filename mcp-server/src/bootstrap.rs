@@ -397,7 +397,7 @@ impl RuntimeConfig {
             _ => return None,
         };
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Some(parse_status_instances(&stdout))
+        parse_status_instances(&stdout)
     }
 
     fn validate_prerequisites(&self) -> Result<()> {
@@ -561,17 +561,16 @@ fn canonicalize_workspace(raw: &str) -> Option<String> {
 
 /// Extract instance records from `lspmux status --json` output.
 ///
-/// Defensive against schema drift: every field except `pid` and
-/// `workspaceRoot.path` is optional. Returns an empty vector when the JSON
-/// can't be parsed or no `instances[]` array is present.
-fn parse_status_instances(json: &str) -> Vec<InstanceRecord> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
-    let Some(instances) = value.get("instances").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    instances
+/// Strict at the envelope, lenient per instance. Returns `None` when the
+/// output isn't the expected shape (invalid JSON, or no `instances[]` array)
+/// so callers can tell "couldn't parse the response" apart from "daemon up,
+/// serving nothing" (`Some(vec![])`). Within a valid envelope, individual
+/// instances missing `pid` or `workspaceRoot.path` are skipped rather than
+/// failing the whole parse, so one drifted entry can't blind us to the rest.
+fn parse_status_instances(json: &str) -> Option<Vec<InstanceRecord>> {
+    let value = serde_json::from_str::<serde_json::Value>(json).ok()?;
+    let instances = value.get("instances")?.as_array()?;
+    let records = instances
         .iter()
         .filter_map(|instance| {
             let pid = u32::try_from(instance.get("pid")?.as_u64()?).ok()?;
@@ -594,7 +593,8 @@ fn parse_status_instances(json: &str) -> Vec<InstanceRecord> {
                 client_count,
             })
         })
-        .collect()
+        .collect();
+    Some(records)
 }
 
 fn default_socket_path(
@@ -911,7 +911,7 @@ connect = ["127.0.0.1", 27631]
             ws_a.to_str().unwrap(),
             ws_b.to_str().unwrap()
         );
-        let got = parse_status_instances(&json);
+        let got = parse_status_instances(&json).expect("valid envelope parses");
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].pid, 81886);
         assert_eq!(got[0].idle_for_ms, Some(100));
@@ -927,21 +927,31 @@ connect = ["127.0.0.1", 27631]
     }
 
     #[test]
-    fn parse_status_instances_returns_empty_for_malformed_json() {
-        assert!(parse_status_instances("not json").is_empty());
-        assert!(parse_status_instances("{}").is_empty());
-        assert!(parse_status_instances(r#"{"instances": "wrong type"}"#).is_empty());
+    fn parse_status_instances_returns_none_for_undecipherable_envelope() {
+        // Envelope shape we can't read → None, so callers report the daemon as
+        // unreachable rather than "up, serving nothing."
+        assert!(parse_status_instances("not json").is_none());
+        assert!(parse_status_instances("{}").is_none());
+        assert!(parse_status_instances(r#"{"instances": "wrong type"}"#).is_none());
+    }
+
+    #[test]
+    fn parse_status_instances_returns_some_empty_for_idle_daemon() {
+        // A valid envelope with no instances is "daemon up, serving nothing" —
+        // distinct from the undecipherable case above.
+        assert_eq!(parse_status_instances(r#"{"instances": []}"#), Some(vec![]));
     }
 
     #[test]
     fn parse_status_instances_skips_instances_missing_required_fields() {
-        // No pid → skipped. No workspaceRoot.path → skipped.
+        // No pid → skipped. No workspaceRoot.path → skipped. The envelope is
+        // valid, so the result is Some([]) (all entries skipped), not None.
         let json = r#"{"instances": [
             {"workspaceRoot": {"path": "/tmp"}},
             {"pid": 1, "workspaceRoot": {}},
             {"pid": 2}
         ]}"#;
-        assert!(parse_status_instances(json).is_empty());
+        assert_eq!(parse_status_instances(json), Some(vec![]));
     }
 
     #[test]
