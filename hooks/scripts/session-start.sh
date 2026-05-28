@@ -45,7 +45,7 @@ fi
 # Bound the probe at 3s so a wedged daemon can't hang SessionStart.
 # `timeout` is GNU coreutils (`gtimeout` on stock macOS via Homebrew/nix); when
 # neither is present, fall back to a perl alarm shim. The alarm timer survives
-# `exec`, and SIGALRM's default action kills the child — so the probe stays
+# `exec`, and SIGALRM's default action kills the child, so the probe stays
 # bounded everywhere perl exists (macOS base /usr/bin/perl; most Linux distros).
 if command -v timeout >/dev/null 2>&1; then
     STATUS_JSON="$(timeout 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
@@ -54,9 +54,9 @@ elif command -v gtimeout >/dev/null 2>&1; then
 elif command -v perl >/dev/null 2>&1; then
     STATUS_JSON="$(perl -e 'alarm shift; exec @ARGV' 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
 else
-    # No deadline mechanism available. Skip the probe rather than risk a hang;
-    # downstream branches will report "daemon state unknown" and the user can
-    # fall back to rust_server_status.
+    # No deadline mechanism available. Skip the probe rather than risk a hang.
+    # Downstream treats an empty STATUS_JSON the same as daemon-down, so the
+    # hook errs toward "not running"; the user can confirm via rust_server_status.
     STATUS_JSON=""
 fi
 DAEMON_UP=0
