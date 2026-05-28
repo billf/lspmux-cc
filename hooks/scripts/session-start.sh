@@ -42,18 +42,23 @@ fi
 # Probe the daemon. `lspmux status` exits non-zero when the daemon is down;
 # `--json` emits {"instances":[...]} otherwise. Defensive parsing throughout —
 # unknown schema is treated the same as daemon-down.
-# `timeout` is GNU coreutils; stock macOS lacks it (ships as `gtimeout` via
-# Homebrew/nix coreutils). Fall back to an unwrapped call so the probe still
-# runs rather than silently failing and always reporting daemon-down.
+# Bound the probe at 3s so a wedged daemon can't hang SessionStart.
+# `timeout` is GNU coreutils (`gtimeout` on stock macOS via Homebrew/nix); when
+# neither is present, fall back to a perl alarm shim. The alarm timer survives
+# `exec`, and SIGALRM's default action kills the child — so the probe stays
+# bounded everywhere perl exists (macOS base /usr/bin/perl; most Linux distros).
 if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout 3"
+    STATUS_JSON="$(timeout 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
 elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout 3"
+    STATUS_JSON="$(gtimeout 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
+elif command -v perl >/dev/null 2>&1; then
+    STATUS_JSON="$(perl -e 'alarm shift; exec @ARGV' 3 "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
 else
-    TIMEOUT_CMD=""
+    # No deadline mechanism available. Skip the probe rather than risk a hang;
+    # downstream branches will report "daemon state unknown" and the user can
+    # fall back to rust_server_status.
+    STATUS_JSON=""
 fi
-# shellcheck disable=SC2086
-STATUS_JSON="$(${TIMEOUT_CMD} "${LSPMUX_BIN}" status --json 2>/dev/null || true)"
 DAEMON_UP=0
 if [ -n "${STATUS_JSON}" ] && printf '%s' "${STATUS_JSON}" | jq -e '.instances' >/dev/null 2>&1; then
     DAEMON_UP=1
