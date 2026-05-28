@@ -1,7 +1,7 @@
 //! Runtime bootstrap and service discovery for the shared lspmux service.
 
 use std::fs;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
@@ -663,12 +663,15 @@ async fn detect_legacy_service_manager() -> bool {
 }
 
 fn tcp_is_ready(host: &str, port: u16) -> bool {
-    // `SocketAddr::from_str` does not resolve hostnames, so a non-IP `host`
-    // (e.g. `localhost`) yields `None` rather than panicking on `.unwrap()`.
-    let Ok(addr) = format!("{host}:{port}").parse() else {
+    // `(host, port).to_socket_addrs()` accepts both IPs and hostnames
+    // (resolving via /etc/hosts and DNS), so `tcp://localhost:27631` correctly
+    // probes the loopback listener instead of being reported down.
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
         return false;
     };
-    TcpStream::connect_timeout(&addr, StdDuration::from_millis(500)).is_ok()
+    addrs.into_iter().any(|addr| {
+        TcpStream::connect_timeout(&addr, StdDuration::from_millis(500)).is_ok()
+    })
 }
 
 fn socket_is_ready(path: &str) -> bool {
@@ -876,11 +879,21 @@ connect = ["127.0.0.1", 27631]
     }
 
     #[test]
+    fn tcp_is_ready_resolves_hostnames_to_listening_port() {
+        // A non-IP host (e.g. `connect = "localhost:27631"`) must be resolved
+        // and probed, not declared down. Bind on 127.0.0.1 and probe via
+        // `localhost`: the loopback hostname resolves through /etc/hosts.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(tcp_is_ready("localhost", port));
+    }
+
+    #[test]
     fn tcp_is_ready_returns_false_for_unresolvable_host() {
-        // A non-IP host can reach `tcp_is_ready` via `parse_connect_string`
-        // (e.g. `connect = "localhost:27631"`). It must report not-ready, not
-        // panic on `SocketAddr::from_str`.
-        assert!(!tcp_is_ready("localhost", 27631));
+        // RFC 2606 reserves the `.invalid` TLD specifically for names that must
+        // never resolve. Confirms resolution failure flows to a clean `false`,
+        // not a panic.
+        assert!(!tcp_is_ready("nonexistent.invalid", 27631));
     }
 
     #[test]
