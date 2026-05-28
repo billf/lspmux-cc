@@ -1,7 +1,6 @@
 //! Runtime bootstrap and service discovery for the shared lspmux service.
 
 use std::fs;
-use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
@@ -136,6 +135,10 @@ pub struct InstanceRecord {
 /// fields per call without rebuilding the whole `RuntimeStatus`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceFields {
+    /// `Some(true)` when the daemon responded to `lspmux status --json`,
+    /// `Some(false)` when it didn't respond or its output was unparseable,
+    /// `None` when the probe was skipped (e.g. `service_mode == Skipped`).
+    pub daemon_reachable: Option<bool>,
     pub served_workspaces: Vec<String>,
     pub requested_workspace: Option<String>,
     pub workspace_match: Option<bool>,
@@ -152,6 +155,12 @@ pub struct RuntimeStatus {
     pub server_path: String,
     pub config_path: String,
     pub socket_path: String,
+    /// `Some(true)` when the daemon responded to `lspmux status --json`,
+    /// `Some(false)` when it didn't respond or its output was unparseable,
+    /// `None` when the probe was skipped. Lets clients distinguish "daemon
+    /// down" from "daemon up but serving no instances".
+    #[serde(default)]
+    pub daemon_reachable: Option<bool>,
     /// Canonical workspace paths the running daemon is currently serving.
     /// Empty when the daemon is unreachable or its status output can't be parsed.
     #[serde(default)]
@@ -266,7 +275,7 @@ impl RuntimeConfig {
             return Ok(self.runtime_status(ServiceMode::Skipped).await);
         }
 
-        if self.service_ready() {
+        if self.service_ready().await {
             return Ok(self.runtime_status(ServiceMode::Reused).await);
         }
 
@@ -314,20 +323,23 @@ impl RuntimeConfig {
             .workspace_root
             .as_deref()
             .and_then(canonicalize_workspace);
-        let instances = match service_mode {
-            ServiceMode::Skipped => Vec::new(),
-            _ => self.discover_status().await.unwrap_or_default(),
+        let (daemon_reachable, instances) = match service_mode {
+            ServiceMode::Skipped => (None, Vec::new()),
+            _ => self
+                .discover_status()
+                .await
+                .map_or_else(|| (Some(false), Vec::new()), |v| (Some(true), v)),
         };
         let matched_instance = requested_workspace.as_ref().and_then(|req| {
             instances
                 .iter()
                 .find(|i| i.canonical_workspace_root.as_ref() == Some(req))
         });
-        let workspace_match = match (&requested_workspace, service_mode) {
-            (_, ServiceMode::Skipped) => None,
-            (Some(_), _) if !instances.is_empty() => Some(matched_instance.is_some()),
-            // No requested workspace, or daemon returned no instances:
-            // can't make a determination.
+        // workspace_match is determinable only when the daemon responded AND
+        // a workspace was requested. Daemon-down and probe-skipped both yield
+        // None ("unknown") here; callers distinguish via daemon_reachable.
+        let workspace_match = match (daemon_reachable, &requested_workspace) {
+            (Some(true), Some(_)) => Some(matched_instance.is_some()),
             _ => None,
         };
         let daemon_pid = matched_instance.map(|i| i.pid);
@@ -337,6 +349,7 @@ impl RuntimeConfig {
             .filter_map(|i| i.canonical_workspace_root)
             .collect();
         WorkspaceFields {
+            daemon_reachable,
             served_workspaces,
             requested_workspace,
             workspace_match,
@@ -355,6 +368,7 @@ impl RuntimeConfig {
             server_path: self.server_path.clone(),
             config_path: self.config_path.clone(),
             socket_path: self.socket_path.clone(),
+            daemon_reachable: fields.daemon_reachable,
             served_workspaces: fields.served_workspaces,
             requested_workspace: fields.requested_workspace,
             workspace_match: fields.workspace_match,
@@ -422,9 +436,9 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    fn service_ready(&self) -> bool {
+    async fn service_ready(&self) -> bool {
         match &self.connect_addr {
-            Some(ConnectAddr::Tcp(host, port)) => tcp_is_ready(host, *port),
+            Some(ConnectAddr::Tcp(host, port)) => tcp_is_ready(host, *port).await,
             Some(ConnectAddr::Unix(path)) => socket_is_ready(path),
             None => socket_is_ready(&self.socket_path),
         }
@@ -433,7 +447,7 @@ impl RuntimeConfig {
     async fn wait_for_socket(&self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if self.service_ready() {
+            if self.service_ready().await {
                 return true;
             }
             sleep(Duration::from_millis(200)).await;
@@ -662,16 +676,23 @@ async fn detect_legacy_service_manager() -> bool {
     }
 }
 
-fn tcp_is_ready(host: &str, port: u16) -> bool {
-    // `(host, port).to_socket_addrs()` accepts both IPs and hostnames
-    // (resolving via /etc/hosts and DNS), so `tcp://localhost:27631` correctly
-    // probes the loopback listener instead of being reported down.
-    let Ok(addrs) = (host, port).to_socket_addrs() else {
+async fn tcp_is_ready(host: &str, port: u16) -> bool {
+    // Async DNS and connect, so a slow resolver or a multi-A-record `localhost`
+    // (e.g. ::1 + 127.0.0.1) can't pin a Tokio worker thread. `host` is already
+    // stripped of any `tcp://` prefix by `parse_connect_string`.
+    let Ok(addrs) = tokio::net::lookup_host((host, port)).await else {
         return false;
     };
-    addrs.into_iter().any(|addr| {
-        TcpStream::connect_timeout(&addr, StdDuration::from_millis(500)).is_ok()
-    })
+    for addr in addrs {
+        let connect = tokio::net::TcpStream::connect(addr);
+        if matches!(
+            tokio::time::timeout(StdDuration::from_millis(500), connect).await,
+            Ok(Ok(_))
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 fn socket_is_ready(path: &str) -> bool {
@@ -862,38 +883,38 @@ connect = ["127.0.0.1", 27631]
         );
     }
 
-    #[test]
-    fn tcp_is_ready_detects_listener() {
+    #[tokio::test]
+    async fn tcp_is_ready_detects_listener() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(tcp_is_ready("127.0.0.1", port));
+        assert!(tcp_is_ready("127.0.0.1", port).await);
     }
 
-    #[test]
-    fn tcp_is_ready_returns_false_for_closed_port() {
+    #[tokio::test]
+    async fn tcp_is_ready_returns_false_for_closed_port() {
         // Bind then immediately drop to get a port that's definitely not listening.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        assert!(!tcp_is_ready("127.0.0.1", port));
+        assert!(!tcp_is_ready("127.0.0.1", port).await);
     }
 
-    #[test]
-    fn tcp_is_ready_resolves_hostnames_to_listening_port() {
+    #[tokio::test]
+    async fn tcp_is_ready_resolves_hostnames_to_listening_port() {
         // A non-IP host (e.g. `connect = "localhost:27631"`) must be resolved
         // and probed, not declared down. Bind on 127.0.0.1 and probe via
         // `localhost`: the loopback hostname resolves through /etc/hosts.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(tcp_is_ready("localhost", port));
+        assert!(tcp_is_ready("localhost", port).await);
     }
 
-    #[test]
-    fn tcp_is_ready_returns_false_for_unresolvable_host() {
+    #[tokio::test]
+    async fn tcp_is_ready_returns_false_for_unresolvable_host() {
         // RFC 2606 reserves the `.invalid` TLD specifically for names that must
         // never resolve. Confirms resolution failure flows to a clean `false`,
         // not a panic.
-        assert!(!tcp_is_ready("nonexistent.invalid", 27631));
+        assert!(!tcp_is_ready("nonexistent.invalid", 27631).await);
     }
 
     #[test]
