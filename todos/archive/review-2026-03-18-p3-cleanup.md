@@ -3,6 +3,15 @@
 Full codebase review, 2026-03-18. Branch: `main` (HEAD: 0d7e1e2).
 Sources: code-simplicity-reviewer, pattern-recognition-specialist, clippy.
 
+> **Disposition (2026-05-28):** triaged during the todos/brainstorms
+> consolidation. This file is a historical review snapshot; live findings moved
+> to a tracked cleanup backlog.
+>
+> | Finding | Status | Where it went |
+> |---------|--------|---------------|
+> | PAT-5 | RESOLVED | no embedded tool list in `session-start.sh` (ARCH-2 rewrite) |
+> | CLIP-1, SIMP-3, SIMP-4, PAT-1, PAT-2, PAT-6, PERF-3, SEC-6 | PROMOTED | `todos/2026-05-28-code-cleanup-backlog.md` |
+
 ---
 
 ## CLIP-1: Three `missing_const_for_fn` warnings

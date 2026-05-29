@@ -1,8 +1,8 @@
 # lspmux-cc: observability and artifact-reuse roadmap
 
 **Date:** 2026-03-18
-**Status:** Brainstorm
-**Context:** Follow-up to `docs/brainstorms/2026-02-05-lspmux-claude-code-brainstorm.md`
+**Status:** Live roadmap. Phase 1 (observability) shipped via REV-004; Phase 2 (compiler accounting, REV-005) and Phase 3 (validation) remain open.
+**Context:** Follow-up to `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md`
 
 ## What changed in my understanding during review
 
@@ -134,12 +134,12 @@ Success should look like this:
 
 ## Near-term roadmap
 
-### Phase 1: observability foundation
+### Phase 1: observability foundation (mostly shipped, REV-004)
 
-- add explicit client identity propagation
-- add structured logs and metrics
-- ingest rust-analyzer readiness notifications
-- extend `rust_server_status`
+- [x] add explicit client identity propagation
+- [x] add structured logs and metrics
+- [ ] ingest rust-analyzer readiness notifications (tracked in `todos/2026-05-28-expand-lsp-tool-surface.md`, AGENT-4)
+- [x] extend `rust_server_status`
 
 ### Phase 2: compiler-action accounting
 
@@ -155,7 +155,7 @@ Success should look like this:
 
 ## Related todos
 
-- `todos/2026-03-18-observability-and-client-attribution.md`
-- `todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md`
-- `todos/2026-03-18-linux-hook-bootstrap-parity.md`
-- `todos/2026-03-18-crate-replacement-opportunities.md`
+- `todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md` (REV-005, open)
+- `todos/archive/2026-03-18-observability-and-client-attribution.md` (REV-004, done)
+- `todos/archive/2026-03-18-linux-hook-bootstrap-parity.md` (REV-006, done)
+- `todos/archive/2026-03-18-crate-replacement-opportunities.md` (REV-007, done)

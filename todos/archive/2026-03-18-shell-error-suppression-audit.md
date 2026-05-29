@@ -1,9 +1,11 @@
 ---
-status: pending
+status: done
 priority: p3
 issue_id: "REV-009"
 tags: [observability, shell, error-handling, hooks]
 dependencies: []
+verified: 2026-05-28
+evidence: "The original silent-failure bugs are fixed: post-file-edit.sh captures sync stderr and logs via log_msg to >&2 with [lspmux-cc:post-file-edit] prefix (lines 24-54). The acceptance criterion's absolute 'no 2>/dev/null || true' wording has one deliberate exception: the bounded status probe (session-start.sh:51-55) keeps || true so a wedged daemon cannot hang SessionStart. Recommended Option 1 shipped."
 ---
 
 # Audit and fix error suppression patterns in shell scripts
@@ -120,9 +122,9 @@ Implement Option 1. The `log_msg()` helper pattern gives visibility without disr
 
 ## Resources
 
-- **Related review:** `todos/review-2026-03-18-p3-cleanup.md` (PAT-1)
-- **Related todo:** `todos/2026-03-18-linux-hook-bootstrap-parity.md` (REV-006)
-- **Related todo:** `todos/2026-03-18-observability-and-client-attribution.md` (REV-004)
+- **Related review:** `todos/archive/review-2026-03-18-p3-cleanup.md` (PAT-1)
+- **Related todo:** `todos/archive/2026-03-18-linux-hook-bootstrap-parity.md` (REV-006)
+- **Related todo:** `todos/archive/2026-03-18-observability-and-client-attribution.md` (REV-004)
 
 ## Acceptance Criteria
 

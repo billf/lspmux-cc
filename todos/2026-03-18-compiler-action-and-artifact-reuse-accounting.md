@@ -113,8 +113,8 @@ Today none of that is measurable from the product itself.
 
 ## Resources
 
-- **Brainstorm:** `docs/brainstorms/2026-02-05-lspmux-claude-code-brainstorm.md`
-- **Related todo:** `todos/2026-03-18-observability-and-client-attribution.md`
+- **Brainstorm:** `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md`
+- **Related todo:** `todos/archive/2026-03-18-observability-and-client-attribution.md` (REV-004, done)
 - **Local evidence:** `mcp-server/target/flycheck0/stdout` (`compiler-artifact`, `fresh: true`)
 - **External docs:** cargo JSON message format and rust-analyzer status extensions
 

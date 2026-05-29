@@ -101,6 +101,6 @@ Everything else (sccache server lifecycle, cross-project cache sharing, CI cache
 ## Related
 
 - `todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md` (REV-005) — measuring reuse
-- `docs/brainstorms/2026-03-18-per-worktree-socket-routing.md` — per-worktree RA instances
+- `docs/brainstorms/archive/2026-03-18-per-worktree-socket-routing.md` (per-worktree RA instances, superseded)
 - `docs/brainstorms/2026-03-18-observability-and-reuse-roadmap.md` — overall roadmap
 - `config/lspmux.toml` — `pass_environment` already passes `CARGO_HOME`

@@ -1,9 +1,11 @@
 ---
-status: pending
+status: done
 priority: p2
 issue_id: "REV-007"
 tags: [dependencies, crates, maintainability, observability, bootstrap]
 dependencies: []
+verified: 2026-05-28
+evidence: "mcp-server/Cargo.toml adopts directories, libc, metrics, which; libc::getuid() at mcp-server/src/bootstrap.rs:537. Recommended Option 1 shipped. LSP-transport replacement intentionally deferred as a separate spike."
 ---
 
 # Replace selected hand-rolled code with existing crates
@@ -109,8 +111,8 @@ The project’s differentiator is worktree-level rust-analyzer sharing and host 
 
 - **External docs:** `directories` crate (`ProjectDirs`, `BaseDirs`)
 - **External docs:** `metrics` crate counters/histograms and exporter guidance
-- **Related review notes:** `todos/review-2026-03-18-p1-critical.md`, `todos/review-2026-03-18-p2-important.md`
-- **Related todo:** `todos/2026-03-18-observability-and-client-attribution.md`
+- **Related review notes:** `todos/archive/review-2026-03-18-p1-critical.md`, `todos/archive/review-2026-03-18-p2-important.md`
+- **Related todo:** `todos/archive/2026-03-18-observability-and-client-attribution.md`
 
 ## Acceptance Criteria
 
