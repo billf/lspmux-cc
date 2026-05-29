@@ -9,6 +9,7 @@ review snapshots live under [`archive/`](archive/).
 | Todo | Priority | Summary |
 |------|----------|---------|
 | [REV-005: compiler / artifact-reuse accounting](2026-03-18-compiler-action-and-artifact-reuse-accounting.md) | p1 | Measure when rust-analyzer forces compiler work vs reuses artifacts (REV-004 groundwork done) |
+| [REV-008: MCP request dedup & response caching](2026-03-18-mcp-request-deduplication-and-caching.md) | p3 | Coalesce concurrent duplicate tool calls; TTL response cache (REV-004 dependency now done) |
 | [REV-010: expand LSP tool surface](2026-05-28-expand-lsp-tool-surface.md) | p2 | Code actions, rename, document symbols, readiness, call hierarchy, go-to-impl, expand-macro |
 | [REV-011: server process hardening](2026-05-28-server-process-hardening.md) | p2 | PID tracking for direct-spawn; 0700 socket dir |
 | [REV-012: code cleanup backlog](2026-05-28-code-cleanup-backlog.md) | p3 | Opportunistic simplification / perf / pattern cleanup |
