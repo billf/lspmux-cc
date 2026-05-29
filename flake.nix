@@ -50,7 +50,12 @@
         in
         {
           overlayAttrs = {
-            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer rust-analyzer-nightly plugin;
+            # NOTE: rust-analyzer is intentionally NOT exported here. Exporting it
+            # replaces nixpkgs' top-level rust-analyzer, which changes the hash of
+            # rusty-v8-rust-toolchain and cascades into rusty-v8 -> deno source
+            # rebuilds for consumers (see issue #2). rust-analyzer-nightly is
+            # additive (no nixpkgs collision); consumers opt in via it explicitly.
+            inherit (config.packages) lspmux-cc-mcp lspmux rust-analyzer-nightly plugin;
           };
 
           packages = {
