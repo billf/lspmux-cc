@@ -1,9 +1,11 @@
 ---
-status: pending
+status: done
 priority: p2
 issue_id: "REV-006"
 tags: [hooks, bootstrap, linux, systemd, claude-code]
 dependencies: []
+verified: 2026-05-28
+evidence: "hooks/scripts/session-start.sh is status-only (line 5: 'Bootstrap decisions live in the Rust MCP runtime'); no launchctl/direct-start path remains, so the missing --config gap is moot. Recommended Option 1 shipped; one authoritative bootstrap policy lives in mcp-server/src/bootstrap.rs."
 ---
 
 # Bring Claude hook bootstrap behavior back in sync with runtime bootstrap
@@ -98,7 +100,7 @@ The repository supports launchd and systemd at setup time, but the Claude hook o
 
 ## Resources
 
-- **Related review notes:** `todos/review-2026-03-18-p2-important.md` (`ARCH-2`, `PAT-3`)
+- **Related review notes:** `todos/archive/review-2026-03-18-p2-important.md` (`ARCH-2`, `PAT-3`)
 - **Reference implementation:** `mcp-server/src/bootstrap.rs`
 - **Docs:** `docs/hosts/claude-code.md`
 

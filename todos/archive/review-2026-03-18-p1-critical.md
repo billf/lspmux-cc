@@ -3,6 +3,17 @@
 Full codebase review, 2026-03-18. Branch: `main` (HEAD: 0d7e1e2).
 Sources: security-sentinel, architecture-strategist, agent-native-reviewer.
 
+> **Disposition (2026-05-28):** triaged during the todos/brainstorms
+> consolidation. This file is a historical review snapshot; live findings moved
+> to tracked todos and the workspace-split requirements doc.
+>
+> | Finding | Status | Where it went |
+> |---------|--------|---------------|
+> | SEC-1 | RESOLVED | repo no longer downloads rust-analyzer; `bin/update-rust-analyzer` removed |
+> | SEC-2 | RESOLVED | `mcp-server/src/bootstrap.rs:537` uses `libc::getuid()` |
+> | ARCH-1 | FOLDED | `docs/brainstorms/2026-05-04-mcp-server-workspace-split-requirements.md` |
+> | AGENT-1, AGENT-2, AGENT-3 | PROMOTED | `todos/2026-05-28-expand-lsp-tool-surface.md` |
+
 ---
 
 ## SEC-1: Binary download without upstream checksum verification

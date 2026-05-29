@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-18
 **Status:** SUPERSEDED. The post-M1 integration test (`two_worktrees_get_separate_rust_analyzers`, commit `8747518`) proved upstream lspmux already multiplexes worktrees at distinct paths correctly — two worktrees produce two rust-analyzer instances with no cross-contamination. Hash-derived per-worktree sockets are not pursued. The observability/UX goals were addressed in M4 (`rust_workspace_registry` tool) and M5 (on-demand spawn replacing the launchd assumption). See `docs/migration-m5.md`.
-**Context:** Follow-up to `docs/brainstorms/2026-02-05-lspmux-claude-code-brainstorm.md` and `docs/brainstorms/2026-03-18-observability-and-reuse-roadmap.md`
+**Context:** Follow-up to `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md` and `docs/brainstorms/2026-03-18-observability-and-reuse-roadmap.md`
 
 ## The problem
 
@@ -94,6 +94,6 @@ The 5-minute idle timeout is the primary cleanup mechanism. Socket dirs on macOS
 
 ## Related
 
-- `todos/2026-03-18-observability-and-client-attribution.md` (REV-004) — client/workspace attribution
+- `todos/archive/2026-03-18-observability-and-client-attribution.md` (REV-004) — client/workspace attribution
 - `docs/brainstorms/2026-03-18-observability-and-reuse-roadmap.md` — "one RA per worktree" as a stated goal
-- `docs/brainstorms/2026-02-05-lspmux-claude-code-brainstorm.md` — original architecture
+- `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md` — original architecture

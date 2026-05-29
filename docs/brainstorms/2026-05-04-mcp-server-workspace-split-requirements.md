@@ -5,6 +5,13 @@ topic: mcp-server-workspace-split
 
 # `mcp-server` Workspace Split for Testability
 
+> **Note (2026-05-28):** this split subsumes two findings from the archived
+> 2026-03-18 review: ARCH-1 (`tools.rs` trapped in the binary crate, blocking
+> integration tests) and ARCH-3 (`lsp_client.rs` over-scoped, extract `uri.rs`
+> and `language.rs`). Both are addressed by the crate breakdown below and are not
+> tracked separately. See `todos/archive/review-2026-03-18-p1-critical.md` and
+> `todos/archive/review-2026-03-18-p2-important.md`.
+
 ## Summary
 
 Split the single-package `mcp-server/` crate into a 4-crate Cargo workspace —

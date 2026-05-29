@@ -1,9 +1,11 @@
 ---
-status: pending
+status: done
 priority: p1
 issue_id: "REV-004"
 tags: [observability, metrics, tracing, client-attribution, rust-analyzer, mcp]
 dependencies: []
+verified: 2026-05-28
+evidence: "mcp-server/src/telemetry.rs (ClientIdentity, ReadinessState, BootstrapTelemetry, ToolTelemetry, record_bootstrap_success/failure); rust_server_status surfaces daemon_reachable/served_workspaces via mcp-server/src/bootstrap.rs:141. Observability MVP shipped; deeper compiler accounting continues under REV-005."
 ---
 
 # Add first-class observability and client attribution
@@ -117,11 +119,11 @@ Without this, the project cannot prove that it is delivering the intended worktr
 
 ## Resources
 
-- **Brainstorm:** `docs/brainstorms/2026-02-05-lspmux-claude-code-brainstorm.md`
+- **Brainstorm:** `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md`
 - **External docs:** rust-analyzer `experimental/serverStatus` and `rust-analyzer/analyzerStatus`
 - **External docs:** `metrics` crate labeled counters and histograms
 - **Related todo:** `todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md`
-- **Related review notes:** `todos/review-2026-03-18-p2-important.md` (`AGENT-4`)
+- **Related review notes:** `todos/archive/review-2026-03-18-p2-important.md` (`AGENT-4`)
 
 ## Acceptance Criteria
 

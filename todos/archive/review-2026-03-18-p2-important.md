@@ -3,6 +3,21 @@
 Full codebase review, 2026-03-18. Branch: `main` (HEAD: 0d7e1e2).
 Sources: security-sentinel, performance-oracle, architecture-strategist, code-simplicity-reviewer, agent-native-reviewer, pattern-recognition-specialist.
 
+> **Disposition (2026-05-28):** triaged during the todos/brainstorms
+> consolidation. This file is a historical review snapshot; live findings moved
+> to tracked todos and the workspace-split requirements doc.
+>
+> | Finding | Status | Where it went |
+> |---------|--------|---------------|
+> | SEC-3 | RESOLVED | socket-type check in `mcp-server/src/bootstrap.rs` |
+> | ARCH-2 | RESOLVED | hook reduced to status-only (REV-006) |
+> | PAT-3 | RESOLVED | no direct-start path in `session-start.sh` (REV-006) |
+> | PAT-4 | OBSOLETE | `bin/update-rust-analyzer` removed |
+> | ARCH-3 | FOLDED | `docs/brainstorms/2026-05-04-mcp-server-workspace-split-requirements.md` |
+> | AGENT-4, AGENT-5, AGENT-6, AGENT-7, AGENT-8 | PROMOTED | `todos/2026-05-28-expand-lsp-tool-surface.md` |
+> | SEC-4, SEC-5 | PROMOTED | `todos/2026-05-28-server-process-hardening.md` |
+> | PERF-1, SIMP-1, SIMP-2, PERF-2 | PROMOTED | `todos/2026-05-28-code-cleanup-backlog.md` |
+
 ---
 
 ## SEC-3: Socket existence check without type verification
