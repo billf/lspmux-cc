@@ -1,9 +1,10 @@
 ---
-status: pending
+status: planned
 priority: p1
 issue_id: "REV-005"
 tags: [artifacts, cargo, rust-analyzer, sccache, reuse, observability]
 dependencies: ["REV-004"]
+plan: "docs/plans/2026-05-28-002-feat-compiler-action-reuse-accounting-plan.md"
 ---
 
 # Measure compiler actions and artifact reuse explicitly

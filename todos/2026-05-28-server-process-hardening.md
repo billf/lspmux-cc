@@ -1,9 +1,10 @@
 ---
-status: pending
+status: planned
 priority: p2
 issue_id: "REV-011"
 tags: [security, bootstrap, process-lifecycle, sockets]
 dependencies: []
+plan: "docs/plans/2026-05-28-005-fix-server-process-hardening-plan.md"
 ---
 
 # Harden the directly-spawned server process and socket directory

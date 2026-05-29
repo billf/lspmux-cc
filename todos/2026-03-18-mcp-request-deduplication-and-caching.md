@@ -1,9 +1,10 @@
 ---
-status: pending
+status: planned
 priority: p3
 issue_id: "REV-008"
 tags: [performance, caching, deduplication, mcp, moka]
 dependencies: ["REV-004"]
+plan: "docs/plans/2026-05-28-003-feat-mcp-request-dedup-caching-plan.md"
 ---
 
 # Add request deduplication and response caching at the MCP tool layer

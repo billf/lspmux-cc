@@ -1,9 +1,10 @@
 ---
-status: pending
+status: planned
 priority: p2
 issue_id: "REV-010"
 tags: [mcp, tools, lsp, rust-analyzer, agent-native]
 dependencies: []
+plan: "docs/plans/2026-05-28-004-feat-expand-lsp-tool-surface-plan.md"
 ---
 
 # Expand the MCP LSP tool surface

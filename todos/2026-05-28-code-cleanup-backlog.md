@@ -1,9 +1,10 @@
 ---
-status: pending
+status: planned
 priority: p3
 issue_id: "REV-012"
 tags: [cleanup, simplification, performance, patterns, clippy]
 dependencies: []
+plan: "docs/plans/2026-05-28-006-refactor-code-cleanup-backlog-plan.md"
 ---
 
 # Code cleanup backlog
