@@ -233,12 +233,7 @@ impl LspClient {
         #[allow(deprecated)] // root_uri deprecated but still needed
         let init_params = InitializeParams {
             root_uri,
-            capabilities: ClientCapabilities {
-                experimental: Some(json!({
-                    "serverStatusNotification": true,
-                })),
-                ..ClientCapabilities::default()
-            },
+            capabilities: client_capabilities()?,
             ..InitializeParams::default()
         };
 
@@ -553,6 +548,51 @@ impl LspClient {
     }
 }
 
+/// Build the LSP `ClientCapabilities` advertised to rust-analyzer.
+///
+/// Advertising these is load-bearing: rust-analyzer withholds code actions,
+/// rename, document symbols, call hierarchy, and go-to-implementation unless
+/// the client asks for them. Capabilities are declared in their LSP wire shape
+/// and deserialized into the typed `TextDocumentClientCapabilities` — that keeps
+/// the declaration readable instead of hand-building a dozen nested capability
+/// structs. The experimental `serverStatusNotification` override is preserved so
+/// rust-analyzer keeps streaming readiness transitions.
+///
+/// # Errors
+///
+/// Returns an error only if the static capability JSON fails to deserialize,
+/// which is a programming error and is covered by a unit test.
+fn client_capabilities() -> Result<ClientCapabilities> {
+    let text_document = serde_json::from_value(json!({
+        "codeAction": {
+            "codeActionLiteralSupport": {
+                "codeActionKind": {
+                    "valueSet": [
+                        "", "quickfix", "refactor", "refactor.extract",
+                        "refactor.inline", "refactor.rewrite", "source",
+                        "source.organizeImports"
+                    ]
+                }
+            },
+            "resolveSupport": { "properties": ["edit"] },
+            "dataSupport": true
+        },
+        "rename": { "prepareSupport": true },
+        "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+        "callHierarchy": {},
+        "implementation": {}
+    }))
+    .context("invalid client capability JSON")?;
+
+    Ok(ClientCapabilities {
+        text_document: Some(text_document),
+        experimental: Some(json!({
+            "serverStatusNotification": true,
+        })),
+        ..ClientCapabilities::default()
+    })
+}
+
 /// Build a `TextDocumentPositionParams` from a file path and position.
 fn text_doc_position(
     file: &str,
@@ -695,6 +735,40 @@ mod tests {
     fn file_uri_absolute_path() {
         let uri = file_uri("/tmp/test.rs").unwrap();
         assert_eq!(uri.as_str(), "file:///tmp/test.rs");
+    }
+
+    #[test]
+    fn client_capabilities_advertise_new_features() {
+        let caps = client_capabilities().expect("static capability JSON deserializes");
+        let value = serde_json::to_value(&caps).expect("capabilities serialize");
+
+        // The serverStatus override that readiness ingestion depends on is preserved.
+        assert_eq!(
+            value["experimental"]["serverStatusNotification"],
+            serde_json::json!(true)
+        );
+
+        let td = &value["textDocument"];
+        assert!(
+            td["codeAction"]["codeActionLiteralSupport"]["codeActionKind"]["valueSet"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|k| k == "quickfix")),
+            "codeAction literal support advertised"
+        );
+        assert_eq!(
+            td["codeAction"]["resolveSupport"]["properties"][0],
+            serde_json::json!("edit")
+        );
+        assert_eq!(td["rename"]["prepareSupport"], serde_json::json!(true));
+        assert_eq!(
+            td["documentSymbol"]["hierarchicalDocumentSymbolSupport"],
+            serde_json::json!(true)
+        );
+        assert!(td.get("callHierarchy").is_some(), "call hierarchy advertised");
+        assert!(
+            td.get("implementation").is_some(),
+            "implementation advertised"
+        );
     }
 
     #[test]
