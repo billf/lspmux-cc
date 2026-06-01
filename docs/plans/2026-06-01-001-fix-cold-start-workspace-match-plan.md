@@ -1,5 +1,5 @@
 ---
-status: active
+status: completed
 type: fix
 origin: "https://github.com/billf/lspmux-cc/issues/1"
 created: 2026-06-01
