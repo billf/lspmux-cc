@@ -24,7 +24,7 @@ Gaps from the 2026-03-18 review (AGENT-1..8):
 - **AGENT-1 code actions:** no `textDocument/codeAction`; agent guesses instead of applying RA's quick fix.
 - **AGENT-2 rename:** no `textDocument/rename`; cross-codebase renames need manual `find_references` + per-file edits.
 - **AGENT-3 document symbols:** no `textDocument/documentSymbol`; can't outline a file without reading it.
-- **AGENT-4 readiness:** largely shipped since this plan was drafted — `experimental/serverStatus` is ingested (`lsp_client.rs` `handle_server_status_notification`), tracked in `ReadinessState { health, quiescent, message, updated_at_ms }` (`telemetry.rs`), exposed via `LspClient::readiness()`, and surfaced through `rust_server_status` (`ServerStatusResponse.readiness` + the summary line). Residual only: no `$/progress` ingestion and no explicit `indexing` field (derivable as `!quiescent`). See U5.
+- **AGENT-4 readiness:** largely shipped since this plan was drafted. `experimental/serverStatus` is ingested (`lsp_client.rs` `handle_server_status_notification`), tracked in `ReadinessState { health, quiescent, message, updated_at_ms }` (`telemetry.rs`), exposed via `LspClient::readiness()`, and surfaced through `rust_server_status` (`ServerStatusResponse.readiness` + the summary line). Residual only: no `$/progress` ingestion and no explicit `indexing` field (derivable as `!quiescent`). See U5.
 - **AGENT-5 call hierarchy:** no `callHierarchy/incomingCalls` / `outgoingCalls`.
 - **AGENT-6 go-to-implementation:** no `textDocument/implementation`.
 - **AGENT-7 client capabilities:** prerequisite — must advertise the features the new tools need.
@@ -151,7 +151,7 @@ ARCH-1 (lib/bin split, `docs/brainstorms/2026-05-04-mcp-server-workspace-split-r
 
 **Verification:** Returns multi-file workspace edit as data; no disk writes.
 
-### U5. Readiness/quiescence in `rust_server_status` (AGENT-4) — mostly shipped
+### U5. Readiness/quiescence in `rust_server_status` (AGENT-4): mostly shipped
 
 **Status note:** The core of this unit already exists. `experimental/serverStatus`
 is ingested by `handle_server_status_notification` (`mcp-server/src/lsp_client.rs`),
@@ -163,8 +163,8 @@ line). A passing test (`server_status_notification_updates_readiness`) covers th
 notification→state transition. ce-work should treat the shipped slice as done and
 only address the residual below.
 
-**Goal (residual):** Optionally widen the readiness signal — ingest `$/progress`
-and/or add an explicit `indexing` field — and confirm the status response exposes
+**Goal (residual):** Optionally widen the readiness signal (ingest `$/progress`
+and/or add an explicit `indexing` field) and confirm the status response exposes
 the readiness fields agents need. Skip entirely if the shipped `health` +
 `quiescent` already satisfy R5 in practice.
 
