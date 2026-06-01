@@ -195,14 +195,23 @@ Subagents inherit their parent's MCP connection. They don't spawn a new MCP proc
 
 Subagents do **not** trigger `SessionStart` hooks. If the parent's bootstrap failed, subagents get zero MCP tools with no error message. The only diagnostic context they have is the `systemMessage` from the parent's `session-start.sh`, which lives in the conversation history.
 
-All 6 MCP tools are available to subagents by default:
+All MCP tools are available to subagents by default:
 
 - `rust_diagnostics`: errors and warnings for a file
 - `rust_hover`: type signature and docs at a position
 - `rust_goto_definition`: find where a symbol is defined
+- `rust_goto_implementation`: find trait/method implementations
 - `rust_find_references`: find all references to a symbol
 - `rust_workspace_symbol`: search symbols by name across the workspace
-- `rust_server_status`: server health, bootstrap metadata, telemetry
+- `rust_document_symbols`: outline a file's symbol tree
+- `rust_code_actions`: list quick fixes / refactors for a range, with their edits (unapplied)
+- `rust_rename`: compute the rename workspace edit (unapplied)
+- `rust_call_hierarchy_incoming` / `rust_call_hierarchy_outgoing`: callers / callees of a symbol
+- `rust_expand_macro`: expand a macro invocation
+- `rust_server_status`: server health, readiness, bootstrap metadata, telemetry
+- `rust_workspace_registry`: all rust-analyzer instances the daemon is hosting
+
+`rust_code_actions` and `rust_rename` return edits as data for you to apply; they never modify files.
 
 You can restrict tools via `disallowedTools` in Claude Code's configuration if needed.
 

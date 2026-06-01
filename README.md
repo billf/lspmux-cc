@@ -44,14 +44,24 @@ For Nix users: `nix build` builds everything from the flake.
 
 ## MCP Tools
 
+All tools are read-only: they return data and never modify your files. The edits from `rust_code_actions` and `rust_rename` are returned for you (or the agent) to apply.
+
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `rust_diagnostics` | Compiler errors and warnings for a file | `file_path` |
 | `rust_hover` | Type signature and docs at a position | `file_path`, `line`, `character` |
 | `rust_goto_definition` | Jump to where a symbol is defined | `file_path`, `line`, `character` |
+| `rust_goto_implementation` | Implementations of a trait or trait method | `file_path`, `line`, `character` |
 | `rust_find_references` | All references to a symbol | `file_path`, `line`, `character` |
 | `rust_workspace_symbol` | Search symbols by name across the workspace | `query` |
-| `rust_server_status` | Server health and workspace info | (none) |
+| `rust_document_symbols` | A file's hierarchical symbol tree | `file_path` |
+| `rust_code_actions` | Quick fixes / refactors for a range, with their edits (unapplied) | `file_path`, `start_line`, `start_character`, `end_line`, `end_character` |
+| `rust_rename` | The workspace edit to rename a symbol (unapplied) | `file_path`, `line`, `character`, `new_name` |
+| `rust_call_hierarchy_incoming` | Callers of the symbol at a position | `file_path`, `line`, `character` |
+| `rust_call_hierarchy_outgoing` | Functions called by the symbol at a position | `file_path`, `line`, `character` |
+| `rust_expand_macro` | Expand the macro invocation at a position | `file_path`, `line`, `character` |
+| `rust_server_status` | Server health, readiness, and workspace info | (none) |
+| `rust_workspace_registry` | All rust-analyzer instances the daemon is hosting | (none) |
 
 **Coordinates:** `line` and `character` inputs are zero-based (first line = 0). Output locations are one-based. Subtract 1 from output values before passing them as input to another tool.
 

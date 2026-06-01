@@ -55,9 +55,19 @@ The MCP tool contract is intentionally Rust-specific and stable:
 - `rust_diagnostics`
 - `rust_hover`
 - `rust_goto_definition`
+- `rust_goto_implementation`
 - `rust_find_references`
 - `rust_workspace_symbol`
+- `rust_document_symbols`
+- `rust_code_actions`
+- `rust_rename`
+- `rust_call_hierarchy_incoming`
+- `rust_call_hierarchy_outgoing`
+- `rust_expand_macro`
 - `rust_server_status`
+- `rust_workspace_registry`
+
+`rust_code_actions` and `rust_rename` return edits as data; they never modify files.
 
 ## Native TOML Configuration
 
