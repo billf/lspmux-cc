@@ -34,6 +34,48 @@ Search for symbols (functions, structs, traits, etc.) by name across the entire 
 rust_workspace_symbol(query: "MyStruct")
 ```
 
+### `rust_goto_implementation`
+Find implementations of a trait or trait method (distinct from go-to-definition).
+```
+rust_goto_implementation(file_path: "/absolute/path/to/file.rs", line: 10, character: 5)
+```
+
+### `rust_document_symbols`
+Outline a file's symbols (modules, functions, structs, impls) as a tree, without reading the file.
+```
+rust_document_symbols(file_path: "/absolute/path/to/file.rs")
+```
+
+### `rust_code_actions`
+List the quick fixes and refactors rust-analyzer offers for a range. Returns each action's title, kind, and workspace edit as data — **edits are not applied**; apply them yourself.
+```
+rust_code_actions(file_path: "/absolute/path/to/file.rs", start_line: 10, start_character: 0, end_line: 10, end_character: 20)
+```
+
+### `rust_rename`
+Compute the workspace edit to rename a symbol across the codebase. Returns per-file text edits as data — **nothing is written to disk**; apply the edits yourself.
+```
+rust_rename(file_path: "/absolute/path/to/file.rs", line: 10, character: 5, new_name: "new_symbol_name")
+```
+
+### `rust_call_hierarchy_incoming`
+Find the callers of the function/method at a position.
+```
+rust_call_hierarchy_incoming(file_path: "/absolute/path/to/file.rs", line: 10, character: 5)
+```
+
+### `rust_call_hierarchy_outgoing`
+Find the functions/methods called by the symbol at a position.
+```
+rust_call_hierarchy_outgoing(file_path: "/absolute/path/to/file.rs", line: 10, character: 5)
+```
+
+### `rust_expand_macro`
+Expand the macro invocation at a position; returns the macro name and expanded source.
+```
+rust_expand_macro(file_path: "/absolute/path/to/file.rs", line: 10, character: 5)
+```
+
 ### `rust_server_status`
 Check server health and confirm the active workspace root.
 ```
