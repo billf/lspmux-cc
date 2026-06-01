@@ -2,6 +2,7 @@
 title: "feat: Expand the MCP LSP tool surface (REV-010)"
 status: active
 date: 2026-05-28
+deepened: 2026-06-01
 type: feat
 issue_id: REV-010
 origin: todos/2026-05-28-expand-lsp-tool-surface.md
@@ -23,7 +24,7 @@ Gaps from the 2026-03-18 review (AGENT-1..8):
 - **AGENT-1 code actions:** no `textDocument/codeAction`; agent guesses instead of applying RA's quick fix.
 - **AGENT-2 rename:** no `textDocument/rename`; cross-codebase renames need manual `find_references` + per-file edits.
 - **AGENT-3 document symbols:** no `textDocument/documentSymbol`; can't outline a file without reading it.
-- **AGENT-4 readiness:** instructions say "wait and retry"; should ingest `experimental/serverStatus` / `$/progress` and expose `{ indexing, quiescent, health }`.
+- **AGENT-4 readiness:** largely shipped since this plan was drafted — `experimental/serverStatus` is ingested (`lsp_client.rs` `handle_server_status_notification`), tracked in `ReadinessState { health, quiescent, message, updated_at_ms }` (`telemetry.rs`), exposed via `LspClient::readiness()`, and surfaced through `rust_server_status` (`ServerStatusResponse.readiness` + the summary line). Residual only: no `$/progress` ingestion and no explicit `indexing` field (derivable as `!quiescent`). See U5.
 - **AGENT-5 call hierarchy:** no `callHierarchy/incomingCalls` / `outgoingCalls`.
 - **AGENT-6 go-to-implementation:** no `textDocument/implementation`.
 - **AGENT-7 client capabilities:** prerequisite — must advertise the features the new tools need.
@@ -54,7 +55,7 @@ ARCH-1 (lib/bin split, `docs/brainstorms/2026-05-04-mcp-server-workspace-split-r
 
 **KTD3 — Incremental delivery by value order.** Land in the todo's suggested order: capabilities (U1) → code actions (U2) → document symbols (U3) → rename (U4) → readiness (U5) → call hierarchy / implementation (U6) → expand-macro (U7). Each tool is independently shippable after U1.
 
-**KTD4 — Readiness via the already-wired serverStatus channel.** `ClientCapabilities` already overrides `experimental.serverStatusNotification` (`lsp_client.rs:236-240`). U5 ingests `experimental/serverStatus` and `$/progress` to maintain `{ indexing, quiescent, health }` and surfaces it through `rust_server_status` (`RuntimeStatus` in `bootstrap.rs:150-188`). This also unblocks REV-008's cache-poisoning guard.
+**KTD4 — Readiness via the already-wired serverStatus channel (already shipped).** `ClientCapabilities` overrides `experimental.serverStatusNotification` and the server ingests `experimental/serverStatus` into `ReadinessState`, surfacing it through `rust_server_status`. U5 is therefore mostly done; its residual is the optional `$/progress` channel and an explicit `indexing` field. The shipped readiness signal already unblocks REV-008's cache-poisoning guard.
 
 **KTD5 — Mirror the existing tool pattern exactly.** New `#[tool]` methods follow the shape of `rust_goto_definition` / `rust_find_references`: validate path (`validate_file_path` `tools.rs:34`), `ensure_file_open`, send the typed LSP request via `LspClient::request` (`lsp_client.rs:270`), shape the response into a record struct (like `LocationRecord`/`RangeRecord` at `tools.rs:146-266`), map errors with `internal_error` (`tools.rs:51`).
 
@@ -150,27 +151,44 @@ ARCH-1 (lib/bin split, `docs/brainstorms/2026-05-04-mcp-server-workspace-split-r
 
 **Verification:** Returns multi-file workspace edit as data; no disk writes.
 
-### U5. Readiness/quiescence in `rust_server_status` (AGENT-4)
+### U5. Readiness/quiescence in `rust_server_status` (AGENT-4) — mostly shipped
 
-**Goal:** Expose `{ indexing, quiescent, health }` so agents stop guessing.
+**Status note:** The core of this unit already exists. `experimental/serverStatus`
+is ingested by `handle_server_status_notification` (`mcp-server/src/lsp_client.rs`),
+stored in `ReadinessState { health, quiescent, message, updated_at_ms }`
+(`mcp-server/src/telemetry.rs`), exposed via `LspClient::readiness()`
+(`mcp-server/src/lsp_client.rs`), and surfaced through `rust_server_status`
+(`ServerStatusResponse.readiness` at `mcp-server/src/tools.rs`, plus the summary
+line). A passing test (`server_status_notification_updates_readiness`) covers the
+notification→state transition. ce-work should treat the shipped slice as done and
+only address the residual below.
 
-**Requirements:** R5, R8.
+**Goal (residual):** Optionally widen the readiness signal — ingest `$/progress`
+and/or add an explicit `indexing` field — and confirm the status response exposes
+the readiness fields agents need. Skip entirely if the shipped `health` +
+`quiescent` already satisfy R5 in practice.
 
-**Dependencies:** U1.
+**Requirements:** R5 (already substantially met), R8.
+
+**Dependencies:** none for the residual (the serverStatus channel is already wired; it does not depend on U1's capability expansion).
 
 **Files:**
-- `mcp-server/src/lsp_client.rs` (handle `experimental/serverStatus` notification + `$/progress`; track readiness state)
-- `mcp-server/src/bootstrap.rs` (`RuntimeStatus` ~150-188: add readiness fields) and `mcp-server/src/tools.rs` (`rust_server_status` ~603-700 surfaces them)
+- `mcp-server/src/lsp_client.rs` (only if adding `$/progress` handling alongside the existing `experimental/serverStatus` branch in `reader_loop`)
+- `mcp-server/src/telemetry.rs` (only if adding an explicit `indexing` field to `ReadinessState`)
 - tests
 
-**Approach:** Subscribe to `experimental/serverStatus` (capability already advertised) and `$/progress`; maintain an atomic readiness snapshot (indexing bool, quiescent bool, health enum). Add fields to the status response (additive).
+**Approach:** `indexing` is derivable as `!quiescent` today, so an explicit field is
+a convenience, not a correctness gap. `$/progress` is partly redundant with
+rust-analyzer's `serverStatus.quiescent`; add it only if a concrete agent need
+appears. Any addition must stay additive to the serialized status contract.
 
-**Test scenarios:**
-- Covers R5: feeding a serverStatus "indexing" then "ready" notification flips `indexing`/`quiescent`.
-- Edge: no notifications yet → conservative default (assume indexing/non-quiescent) so callers don't trust stale-empty results.
-- Integration: status response carries the readiness fields.
+**Test scenarios (residual only):**
+- If `$/progress` ingestion is added: a `$/progress` "begin"→"end" sequence updates the readiness snapshot consistently with the serverStatus path.
+- If an explicit `indexing` field is added: it equals `!quiescent` and defaults conservatively (treated as indexing) before any notification arrives.
 
-**Verification:** Readiness reflects RA progress; surfaced in status. (Also unblocks REV-008 poisoning guard.)
+**Verification:** No regression to the existing readiness surfacing; any new field is
+additive and tested. If the residual is skipped, record that the shipped signal
+satisfies R5.
 
 ### U6. Call hierarchy + go-to-implementation tools (AGENT-5/6)
 
