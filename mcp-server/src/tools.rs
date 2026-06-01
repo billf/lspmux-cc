@@ -625,11 +625,20 @@ impl RustAnalyzerTools {
         // LspClient sent `initialize` and the daemon spawned an instance
         // for this workspace — in the cold-start path that snapshot's
         // workspace_match is stale by the time the tool is called.
+        // client_engaged: whether this server has opened a file yet. Until it
+        // has, the daemon hasn't been asked to spawn our instance, so a missing
+        // match is "pending" (None), not a mismatch. See resolve_workspace_match.
+        let client_engaged = self.lsp.has_opened_files().await;
         let fields = self
             .config
-            .refresh_workspace_fields(self.runtime_status.service_mode)
+            .refresh_workspace_fields(self.runtime_status.service_mode, client_engaged)
             .await;
         let runtime = lspmux_cc_mcp::bootstrap::RuntimeStatus {
+            // daemon_reachable must come from the live probe too: workspace_match
+            // and workspace_match_label both read it, and a daemon that went down
+            // after bootstrap would otherwise still read Some(true) from the
+            // snapshot and mislabel an unreachable daemon as "pending".
+            daemon_reachable: fields.daemon_reachable,
             served_workspaces: fields.served_workspaces,
             requested_workspace: fields.requested_workspace,
             workspace_match: fields.workspace_match,
@@ -637,11 +646,11 @@ impl RustAnalyzerTools {
             daemon_idle_for_ms: fields.daemon_idle_for_ms,
             ..self.runtime_status.clone()
         };
-        let workspace_match_str = match runtime.workspace_match {
-            Some(true) => "true",
-            Some(false) => "false",
-            None => "unknown",
-        };
+        let workspace_match_str = workspace_match_label(
+            runtime.workspace_match,
+            runtime.daemon_reachable,
+            runtime.requested_workspace.is_some(),
+        );
         let summary = format!(
             "{SERVER_NAME} liveness: {server_status}; readiness: {}; workspace root: {}; \
              workspace match: {workspace_match_str}",
@@ -777,6 +786,26 @@ impl RustAnalyzerTools {
     }
 }
 
+/// Human-readable `workspace_match` label for the status summary.
+///
+/// Both "instance pending" and "daemon unreachable" surface as
+/// `workspace_match: None`; this splits them for the reader using
+/// `daemon_reachable`. A reachable daemon with a requested workspace and no
+/// determination yet is "pending" (the cold-start window before this client
+/// opens a file); everything else undeterminable is "unknown".
+const fn workspace_match_label(
+    workspace_match: Option<bool>,
+    daemon_reachable: Option<bool>,
+    workspace_requested: bool,
+) -> &'static str {
+    match workspace_match {
+        Some(true) => "true",
+        Some(false) => "false",
+        None if matches!(daemon_reachable, Some(true)) && workspace_requested => "pending",
+        None => "unknown",
+    }
+}
+
 fn classify_tool_error(error: &McpError) -> ToolOutcome {
     if error.code == ErrorCode::INVALID_PARAMS {
         ToolOutcome::InvalidParams
@@ -808,6 +837,23 @@ mod tests {
     fn validate_file_path_rejects_relative() {
         let err = validate_file_path("relative/path.rs").unwrap_err();
         assert!(err.message.contains("must be absolute"));
+    }
+
+    #[test]
+    fn workspace_match_label_splits_pending_from_unknown() {
+        assert_eq!(workspace_match_label(Some(true), Some(true), true), "true");
+        assert_eq!(
+            workspace_match_label(Some(false), Some(true), true),
+            "false"
+        );
+        // Reachable + requested + undetermined => cold-start pending.
+        assert_eq!(workspace_match_label(None, Some(true), true), "pending");
+        // Daemon down => unknown, not pending.
+        assert_eq!(workspace_match_label(None, Some(false), true), "unknown");
+        // Probe skipped => unknown.
+        assert_eq!(workspace_match_label(None, None, true), "unknown");
+        // Reachable but no workspace requested => unknown, not pending.
+        assert_eq!(workspace_match_label(None, Some(true), false), "unknown");
     }
 
     #[test]

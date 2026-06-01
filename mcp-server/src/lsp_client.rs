@@ -489,6 +489,16 @@ impl LspClient {
         self.readiness.lock().await.clone()
     }
 
+    /// Whether this client has opened at least one file.
+    ///
+    /// The first `ensure_file_open` is what asks the daemon to spawn (or attach
+    /// to) a rust-analyzer instance for this workspace. An empty `opened_files`
+    /// map therefore means we have never engaged the daemon, so a workspace not
+    /// yet appearing in `lspmux status` is "pending," not a mismatch.
+    pub async fn has_opened_files(&self) -> bool {
+        !self.opened_files.lock().await.is_empty()
+    }
+
     /// Search for symbols matching `query` across the workspace.
     ///
     /// Returns `None` if the server returned no results, or the response
@@ -803,6 +813,45 @@ mod tests {
         let err = client.request::<lsp_types::request::Shutdown>(()).await;
         assert!(err.is_err());
         assert!(client.pending.lock().await.is_empty());
+
+        {
+            let mut child = client.child.lock().await;
+            let _ = child.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::significant_drop_tightening)]
+    async fn has_opened_files_reflects_open_state() {
+        let mut child = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+
+        let client = LspClient {
+            child_stdin: Arc::new(Mutex::new(stdin)),
+            next_id: AtomicI64::new(1),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            opened_files: Mutex::new(HashMap::new()),
+            child: Arc::new(Mutex::new(child)),
+            alive: Arc::new(AtomicBool::new(false)),
+            workspace_root: tokio::sync::Mutex::new(None),
+            server_version: tokio::sync::Mutex::new(None),
+            readiness: Arc::new(tokio::sync::Mutex::new(ReadinessState::default())),
+        };
+
+        // Fresh client: nothing opened, so the daemon hasn't been engaged.
+        assert!(!client.has_opened_files().await);
+
+        // After recording an opened file, the accessor flips.
+        client
+            .opened_files
+            .lock()
+            .await
+            .insert("/tmp/foo.rs".to_string(), (0, 0));
+        assert!(client.has_opened_files().await);
 
         {
             let mut child = client.child.lock().await;

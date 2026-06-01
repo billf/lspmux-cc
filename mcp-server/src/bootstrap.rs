@@ -141,6 +141,10 @@ pub struct WorkspaceFields {
     pub daemon_reachable: Option<bool>,
     pub served_workspaces: Vec<String>,
     pub requested_workspace: Option<String>,
+    /// `Some(true)` served, `Some(false)` genuine mismatch, `None` when
+    /// undeterminable — including the cold-start case where the daemon is
+    /// reachable but this client hasn't engaged an instance yet (pending). See
+    /// `resolve_workspace_match`.
     pub workspace_match: Option<bool>,
     pub daemon_pid: Option<u32>,
     pub daemon_idle_for_ms: Option<u64>,
@@ -169,8 +173,12 @@ pub struct RuntimeStatus {
     #[serde(default)]
     pub requested_workspace: Option<String>,
     /// Whether `requested_workspace` appears in `served_workspaces`. `None` when
-    /// the daemon's served workspaces couldn't be determined (e.g. daemon down,
-    /// `lspmux status --json` failed, output schema unexpected).
+    /// the match couldn't be determined — daemon down, `lspmux status --json`
+    /// failed or had an unexpected schema, OR (cold start) the daemon is
+    /// reachable but this client hasn't opened a file yet, so its instance isn't
+    /// registered. Split pending from down via `daemon_reachable`. `Some(false)`
+    /// is a genuine mismatch (we engaged an instance, none serves us). See
+    /// `resolve_workspace_match`.
     #[serde(default)]
     pub workspace_match: Option<bool>,
     /// PID of the rust-analyzer instance serving `requested_workspace`. `None`
@@ -318,7 +326,11 @@ impl RuntimeConfig {
     /// state — after the `LspClient` connects and the daemon spawns an instance
     /// for the workspace — not the bootstrap snapshot, which can lag by the
     /// LSP handshake duration.
-    pub async fn refresh_workspace_fields(&self, service_mode: ServiceMode) -> WorkspaceFields {
+    pub async fn refresh_workspace_fields(
+        &self,
+        service_mode: ServiceMode,
+        client_engaged: bool,
+    ) -> WorkspaceFields {
         let requested_workspace = self
             .workspace_root
             .as_deref()
@@ -335,13 +347,18 @@ impl RuntimeConfig {
                 .iter()
                 .find(|i| i.canonical_workspace_root.as_ref() == Some(req))
         });
-        // workspace_match is determinable only when the daemon responded AND
-        // a workspace was requested. Daemon-down and probe-skipped both yield
-        // None ("unknown") here; callers distinguish via daemon_reachable.
-        let workspace_match = match (daemon_reachable, &requested_workspace) {
-            (Some(true), Some(_)) => Some(matched_instance.is_some()),
-            _ => None,
-        };
+        // workspace_match is determinable only when the daemon responded AND a
+        // workspace was requested. A reachable daemon with no matching instance
+        // is "pending" (None) until this client engages an instance by opening a
+        // file; only then does a missing match mean a genuine mismatch. See
+        // resolve_workspace_match. Daemon-down and probe-skipped also yield None;
+        // callers split pending from down via daemon_reachable.
+        let workspace_match = resolve_workspace_match(
+            daemon_reachable,
+            requested_workspace.as_deref(),
+            matched_instance.is_some(),
+            client_engaged,
+        );
         let daemon_pid = matched_instance.map(|i| i.pid);
         let daemon_idle_for_ms = matched_instance.and_then(|i| i.idle_for_ms);
         let served_workspaces = instances
@@ -359,7 +376,11 @@ impl RuntimeConfig {
     }
 
     async fn runtime_status(&self, service_mode: ServiceMode) -> RuntimeStatus {
-        let fields = self.refresh_workspace_fields(service_mode).await;
+        // Bootstrap runs before any tool call, so the LspClient has opened
+        // nothing yet: client_engaged is false. A reachable daemon with no
+        // matching instance is therefore reported as pending (None), not a
+        // premature mismatch.
+        let fields = self.refresh_workspace_fields(service_mode, false).await;
         let legacy_global_daemon_detected = detect_legacy_service_manager().await;
         let status = RuntimeStatus {
             bootstrap_mode: self.bootstrap_mode,
@@ -573,6 +594,39 @@ fn canonicalize_workspace(raw: &str) -> Option<String> {
         .and_then(|p| p.to_str().map(ToOwned::to_owned))
 }
 
+/// Decide `workspace_match` from the daemon probe plus our own engagement state.
+///
+/// The daemon alone can't distinguish "instance pending" from "genuine
+/// mismatch": at cold start it reports our workspace absent simply because we
+/// haven't opened a file yet, so it hasn't spawned our instance. `client_engaged`
+/// (whether this server's `LspClient` has opened ≥1 file) supplies the missing
+/// signal:
+/// - `Some(true)` — the daemon serves our workspace.
+/// - `None` — undeterminable: daemon down/skipped, no workspace requested, or
+///   reachable-but-pending (we matched nothing and haven't engaged an instance
+///   yet). Callers split pending from down via `daemon_reachable`.
+/// - `Some(false)` — genuine mismatch: we've engaged (opened a file) yet no
+///   instance serves the requested workspace.
+const fn resolve_workspace_match(
+    daemon_reachable: Option<bool>,
+    requested_workspace: Option<&str>,
+    matched: bool,
+    client_engaged: bool,
+) -> Option<bool> {
+    match (daemon_reachable, requested_workspace) {
+        (Some(true), Some(_)) => {
+            if matched {
+                Some(true)
+            } else if client_engaged {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Extract instance records from `lspmux status --json` output.
 ///
 /// Strict at the envelope, lenient per instance. Returns `None` when the
@@ -714,6 +768,42 @@ fn socket_is_ready(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_workspace_match_covers_pending_match_and_mismatch() {
+        let root = Some("/ws");
+        // Warm: an instance serves us — match wins regardless of engagement,
+        // so both client_engaged values must short-circuit to Some(true).
+        assert_eq!(
+            resolve_workspace_match(Some(true), root, true, false),
+            Some(true)
+        );
+        assert_eq!(
+            resolve_workspace_match(Some(true), root, true, true),
+            Some(true)
+        );
+        // Cold start (the bug): reachable, requested, no instance yet, and we
+        // haven't opened a file — pending, not a mismatch.
+        assert_eq!(
+            resolve_workspace_match(Some(true), root, false, false),
+            None
+        );
+        // Genuine mismatch: we engaged an instance (opened a file) yet none
+        // serves the requested workspace.
+        assert_eq!(
+            resolve_workspace_match(Some(true), root, false, true),
+            Some(false)
+        );
+        // No workspace requested — undeterminable.
+        assert_eq!(resolve_workspace_match(Some(true), None, false, true), None);
+        // Daemon down — undeterminable regardless of engagement.
+        assert_eq!(
+            resolve_workspace_match(Some(false), root, false, true),
+            None
+        );
+        // Probe skipped — undeterminable.
+        assert_eq!(resolve_workspace_match(None, root, false, false), None);
+    }
 
     #[test]
     fn socket_is_ready_returns_false_for_missing_path() {
