@@ -553,10 +553,15 @@ impl LspClient {
 /// Advertising these is load-bearing: rust-analyzer withholds code actions,
 /// rename, document symbols, call hierarchy, and go-to-implementation unless
 /// the client asks for them. Capabilities are declared in their LSP wire shape
-/// and deserialized into the typed `TextDocumentClientCapabilities` — that keeps
+/// and deserialized into the typed `TextDocumentClientCapabilities`, which keeps
 /// the declaration readable instead of hand-building a dozen nested capability
 /// structs. The experimental `serverStatusNotification` override is preserved so
 /// rust-analyzer keeps streaming readiness transitions.
+///
+/// We do not advertise `codeAction.resolveSupport`: that tells rust-analyzer it
+/// may defer an action's edit and wait for a `codeAction/resolve` round-trip,
+/// but `rust_code_actions` never resolves, so deferred edits would arrive empty.
+/// Without it, rust-analyzer populates edits eagerly.
 ///
 /// # Errors
 ///
@@ -573,9 +578,7 @@ fn client_capabilities() -> Result<ClientCapabilities> {
                         "source.organizeImports"
                     ]
                 }
-            },
-            "resolveSupport": { "properties": ["edit"] },
-            "dataSupport": true
+            }
         },
         "rename": { "prepareSupport": true },
         "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
@@ -755,16 +758,21 @@ mod tests {
                 .is_some_and(|kinds| kinds.iter().any(|k| k == "quickfix")),
             "codeAction literal support advertised"
         );
-        assert_eq!(
-            td["codeAction"]["resolveSupport"]["properties"][0],
-            serde_json::json!("edit")
+        // resolveSupport is intentionally NOT advertised: we never send
+        // codeAction/resolve, so eager edits are required.
+        assert!(
+            td["codeAction"].get("resolveSupport").is_none(),
+            "resolveSupport must not be advertised"
         );
         assert_eq!(td["rename"]["prepareSupport"], serde_json::json!(true));
         assert_eq!(
             td["documentSymbol"]["hierarchicalDocumentSymbolSupport"],
             serde_json::json!(true)
         );
-        assert!(td.get("callHierarchy").is_some(), "call hierarchy advertised");
+        assert!(
+            td.get("callHierarchy").is_some(),
+            "call hierarchy advertised"
+        );
         assert!(
             td.get("implementation").is_some(),
             "implementation advertised"

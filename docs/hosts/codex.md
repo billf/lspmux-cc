@@ -86,4 +86,4 @@ Codex supports three sandbox modes: `read-only`, `workspace-write`, and `danger-
 
 For lspmux-cc, use `workspace-write`. The MCP server needs to read Rust source files in the workspace but doesn't write anything. `read-only` works too, since the MCP server only reads files and communicates over the Unix socket.
 
-Codex doesn't support LSP plugins. Only the 6 MCP tools are available.
+Codex doesn't support LSP plugins. Only the MCP tools listed above are available.

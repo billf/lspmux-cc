@@ -45,9 +45,20 @@ impl ServerHandler for LspmuxMcpServer {
                  - rust_diagnostics(file_path): compiler errors and warnings for a file\n\
                  - rust_hover(file_path, line, character): type info and docs at a position\n\
                  - rust_goto_definition(file_path, line, character): find definition location\n\
+                 - rust_goto_implementation(file_path, line, character): find trait/method impls\n\
                  - rust_find_references(file_path, line, character): find all references\n\
                  - rust_workspace_symbol(query): find symbols by name across the workspace\n\
-                 - rust_server_status(): check server health and active workspace root\n\
+                 - rust_document_symbols(file_path): outline a file's symbol tree\n\
+                 - rust_code_actions(file_path, start_line, start_character, end_line, end_character): quick fixes / refactors with their edits\n\
+                 - rust_rename(file_path, line, character, new_name): the workspace edit to rename a symbol\n\
+                 - rust_call_hierarchy_incoming(file_path, line, character): callers of a symbol\n\
+                 - rust_call_hierarchy_outgoing(file_path, line, character): callees of a symbol\n\
+                 - rust_expand_macro(file_path, line, character): expand the macro at a position\n\
+                 - rust_server_status(): check server health, readiness, and active workspace root\n\
+                 - rust_workspace_registry(): list all rust-analyzer instances the daemon hosts\n\
+                 \n\
+                 rust_code_actions and rust_rename return edits as DATA only; nothing is written\n\
+                 to disk. Inspect the returned workspace edit and apply it yourself.\n\
                  \n\
                  Position format: line and character inputs are ZERO-BASED (first line = 0).\n\
                  Output locations (file:line:col) are ONE-BASED. Subtract 1 from each before\n\

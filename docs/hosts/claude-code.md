@@ -124,7 +124,7 @@ The plugin wires up four integration points:
 
 **LSP channel.** The `bin/lspmux` wrapper finds the lspmux binary (checking `LSPMUX_PATH`, then `$PATH`, then `$CARGO_HOME/bin/lspmux`), stamps the client identity (`LSPMUX_CLIENT_KIND=claude_lsp`), and `exec`s into `lspmux client`. The client connects to the shared server over the Unix socket and speaks LSP stdio back to Claude Code.
 
-**MCP channel.** The `bin/lspmux-cc-mcp` wrapper locates the `lspmux-cc-mcp` Rust binary, stamps `LSPMUX_CLIENT_KIND=claude_mcp`, and `exec`s it. The MCP server bootstraps its own lspmux client connection internally and exposes 6 tools over MCP stdio.
+**MCP channel.** The `bin/lspmux-cc-mcp` wrapper locates the `lspmux-cc-mcp` Rust binary, stamps `LSPMUX_CLIENT_KIND=claude_mcp`, and `exec`s it. The MCP server bootstraps its own lspmux client connection internally and exposes its full set of tools over MCP stdio.
 
 **SessionStart hook.** `session-start.sh` runs at session startup. It checks whether the shared lspmux service is already running and injects a `systemMessage` into the conversation with status info. It doesn't start or manage services; that's the MCP server's job.
 

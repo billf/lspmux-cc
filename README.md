@@ -10,7 +10,7 @@ lspmux multiplexes multiple LSP client connections through a Unix socket to one 
 graph LR
     NV[Neovim] -- lspmux client --> S
     CC[Claude Code] -- lspmux client --> S
-    CC -. stdio .-> MCP[lspmux-cc-mcp<br/>6 MCP tools]
+    CC -. stdio .-> MCP[lspmux-cc-mcp<br/>14 MCP tools]
     MCP -- lspmux client --> S
     S((Unix socket)) --> LS[lspmux server<br/>spawned on demand by MCP]
     LS --> RA[rust-analyzer]
