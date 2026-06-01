@@ -12,15 +12,10 @@ yet. None are filed as tracker tickets (that needs explicit approval).
 - **[P1] `mcp-server/src/tools.rs` is ~1900 lines.** Extract record structs into
   `tools/records.rs` and shaping helpers into `tools/shaping.rs`. Does **not**
   require the ARCH-1 lib/bin split.
-- **[P2] Repeated tool prelude.** `validate_file_path` + `ensure_file_open` +
-  `file_uri` repeats across ~10 tool methods. Extract
-  `open_file(&LspClient, &str) -> Result<Uri, McpError>`.
-- **[P2] Duplicated goto-response shaping.** The `GotoDefinitionResponse`
-  Scalar/Array/Link match is verbatim-identical in `goto_definition` and
-  `goto_implementation`. Extract a shared `locations_from_goto_response`.
-- **[P2] `CallHierarchyResponse.direction` is a `String`.** A
-  `CallDirection { Incoming, Outgoing }` enum with `#[serde(rename_all="lowercase")]`
-  is wire-compatible and removes the stringly-typed discriminant.
+Resolved by the `refactor(tools): dedupe tool preludes and goto shaping` pass:
+- ~~Repeated tool prelude~~ — extracted `open_file_uri`.
+- ~~Duplicated goto-response shaping~~ — extracted `locations_from_goto_response`.
+- ~~`CallHierarchyResponse.direction` stringly-typed~~ — now a `CallDirection` enum.
 
 ## Correctness / contract
 - **[P2] Resource operations silently dropped.** `workspace_edit_record` skips

@@ -379,12 +379,31 @@ pub struct CallHierarchyCallRecord {
     pub from_ranges: Vec<RangeRecord>,
 }
 
+/// Which way a call hierarchy query points. Serializes as `"incoming"` /
+/// `"outgoing"`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CallDirection {
+    /// Callers of the queried symbol.
+    Incoming,
+    /// Callees the queried symbol invokes.
+    Outgoing,
+}
+
+impl CallDirection {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Incoming => "incoming",
+            Self::Outgoing => "outgoing",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct CallHierarchyResponse {
     pub file_path: String,
     pub requested_position: PositionRecord,
-    /// `"incoming"` (callers) or `"outgoing"` (callees).
-    pub direction: String,
+    pub direction: CallDirection,
     pub found: bool,
     pub call_count: usize,
     pub calls: Vec<CallHierarchyCallRecord>,
@@ -577,12 +596,12 @@ fn symbol_information_record(symbol: lsp_types::SymbolInformation) -> DocumentSy
     }
 }
 
-fn call_hierarchy_item_record(item: &lsp_types::CallHierarchyItem) -> CallHierarchyItemRecord {
+fn call_hierarchy_item_record(item: lsp_types::CallHierarchyItem) -> CallHierarchyItemRecord {
     CallHierarchyItemRecord {
-        name: item.name.clone(),
         kind: symbol_kind_name(item.kind).to_string(),
-        detail: item.detail.clone(),
         location: location_record(&item.uri, &item.selection_range),
+        name: item.name,
+        detail: item.detail,
     }
 }
 
@@ -765,20 +784,7 @@ impl RustAnalyzerTools {
             .await
             .map_err(|e| internal_error(format!("go to definition failed: {e}")))?;
 
-        let locations = match response {
-            Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => {
-                vec![location_record(&location.uri, &location.range)]
-            }
-            Some(lsp_types::GotoDefinitionResponse::Array(locations)) => locations
-                .into_iter()
-                .map(|location| location_record(&location.uri, &location.range))
-                .collect(),
-            Some(lsp_types::GotoDefinitionResponse::Link(links)) => links
-                .into_iter()
-                .map(|link| location_record(&link.target_uri, &link.target_selection_range))
-                .collect(),
-            None => vec![],
-        };
+        let locations = locations_from_goto_response(response);
 
         let found = !locations.is_empty();
         let location_count = locations.len();
@@ -1029,13 +1035,7 @@ impl RustAnalyzerTools {
         params: Parameters<RangeParam>,
     ) -> Result<Json<CodeActionsResponse>, McpError> {
         let p = &params.0;
-        validate_file_path(&p.file_path)?;
-        self.lsp
-            .ensure_file_open(&p.file_path)
-            .await
-            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
-        let uri = file_uri(&p.file_path)
-            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
+        let uri = self.open_file_uri(&p.file_path).await?;
 
         let range = lsp_types::Range {
             start: lsp_types::Position::new(p.start_line, p.start_character),
@@ -1102,13 +1102,7 @@ impl RustAnalyzerTools {
         params: Parameters<FileParam>,
     ) -> Result<Json<DocumentSymbolsResponse>, McpError> {
         let file = &params.0.file_path;
-        validate_file_path(file)?;
-        self.lsp
-            .ensure_file_open(file)
-            .await
-            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
-        let uri = file_uri(file)
-            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
+        let uri = self.open_file_uri(file).await?;
 
         let symbol_params = lsp_types::DocumentSymbolParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
@@ -1217,13 +1211,7 @@ impl RustAnalyzerTools {
         params: Parameters<PositionParam>,
     ) -> Result<Json<LocationsResponse>, McpError> {
         let p = &params.0;
-        validate_file_path(&p.file_path)?;
-        self.lsp
-            .ensure_file_open(&p.file_path)
-            .await
-            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
-        let uri = file_uri(&p.file_path)
-            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
+        let uri = self.open_file_uri(&p.file_path).await?;
 
         let impl_params = lsp_types::request::GotoImplementationParams {
             text_document_position_params: lsp_types::TextDocumentPositionParams {
@@ -1239,20 +1227,7 @@ impl RustAnalyzerTools {
             .await
             .map_err(|e| internal_error(format!("go to implementation failed: {e}")))?;
 
-        let locations = match response {
-            Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => {
-                vec![location_record(&location.uri, &location.range)]
-            }
-            Some(lsp_types::GotoDefinitionResponse::Array(locations)) => locations
-                .into_iter()
-                .map(|location| location_record(&location.uri, &location.range))
-                .collect(),
-            Some(lsp_types::GotoDefinitionResponse::Link(links)) => links
-                .into_iter()
-                .map(|link| location_record(&link.target_uri, &link.target_selection_range))
-                .collect(),
-            None => vec![],
-        };
+        let locations = locations_from_goto_response(response);
 
         let found = !locations.is_empty();
         let location_count = locations.len();
@@ -1303,13 +1278,17 @@ impl RustAnalyzerTools {
                     .unwrap_or_default()
                     .into_iter()
                     .map(|call| CallHierarchyCallRecord {
-                        item: call_hierarchy_item_record(&call.from),
                         from_ranges: call.from_ranges.iter().map(range_record).collect(),
+                        item: call_hierarchy_item_record(call.from),
                     })
                     .collect()
             }
         };
-        Ok(Json(call_hierarchy_response(p, "incoming", calls)))
+        Ok(Json(call_hierarchy_response(
+            p,
+            CallDirection::Incoming,
+            calls,
+        )))
     }
 
     /// Find the calls made by the symbol at a position.
@@ -1340,13 +1319,17 @@ impl RustAnalyzerTools {
                     .unwrap_or_default()
                     .into_iter()
                     .map(|call| CallHierarchyCallRecord {
-                        item: call_hierarchy_item_record(&call.to),
                         from_ranges: call.from_ranges.iter().map(range_record).collect(),
+                        item: call_hierarchy_item_record(call.to),
                     })
                     .collect()
             }
         };
-        Ok(Json(call_hierarchy_response(p, "outgoing", calls)))
+        Ok(Json(call_hierarchy_response(
+            p,
+            CallDirection::Outgoing,
+            calls,
+        )))
     }
 
     /// Expand the macro at a position.
@@ -1359,13 +1342,7 @@ impl RustAnalyzerTools {
         params: Parameters<PositionParam>,
     ) -> Result<Json<MacroExpansionResponse>, McpError> {
         let p = &params.0;
-        validate_file_path(&p.file_path)?;
-        self.lsp
-            .ensure_file_open(&p.file_path)
-            .await
-            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
-        let uri = file_uri(&p.file_path)
-            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
+        let uri = self.open_file_uri(&p.file_path).await?;
 
         let expand_params = lsp_types::TextDocumentPositionParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
@@ -1402,6 +1379,18 @@ impl RustAnalyzerTools {
         Ok(Json(macro_response))
     }
 
+    /// Validate the path, sync the file into the daemon, and build its URI.
+    /// Shared prelude for the tools that issue a position/range LSP request.
+    async fn open_file_uri(&self, file: &str) -> Result<lsp_types::Uri, McpError> {
+        validate_file_path(file)?;
+        self.lsp
+            .ensure_file_open(file)
+            .await
+            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
+        file_uri(file)
+            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))
+    }
+
     /// Prepare a call hierarchy at a position. Opens the file and runs
     /// `textDocument/prepareCallHierarchy`, returning the anchor item if any.
     async fn prepare_call_hierarchy(
@@ -1410,13 +1399,7 @@ impl RustAnalyzerTools {
         line: u32,
         character: u32,
     ) -> Result<Option<lsp_types::CallHierarchyItem>, McpError> {
-        validate_file_path(file)?;
-        self.lsp
-            .ensure_file_open(file)
-            .await
-            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
-        let uri = file_uri(file)
-            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
+        let uri = self.open_file_uri(file).await?;
 
         let prepare_params = lsp_types::CallHierarchyPrepareParams {
             text_document_position_params: lsp_types::TextDocumentPositionParams {
@@ -1435,18 +1418,40 @@ impl RustAnalyzerTools {
     }
 }
 
+/// Shape a `textDocument/definition`-style response (definition or
+/// implementation, both `GotoDefinitionResponse`) into one-based location records.
+fn locations_from_goto_response(
+    response: Option<lsp_types::GotoDefinitionResponse>,
+) -> Vec<LocationRecord> {
+    match response {
+        Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => {
+            vec![location_record(&location.uri, &location.range)]
+        }
+        Some(lsp_types::GotoDefinitionResponse::Array(locations)) => locations
+            .into_iter()
+            .map(|location| location_record(&location.uri, &location.range))
+            .collect(),
+        Some(lsp_types::GotoDefinitionResponse::Link(links)) => links
+            .into_iter()
+            .map(|link| location_record(&link.target_uri, &link.target_selection_range))
+            .collect(),
+        None => vec![],
+    }
+}
+
 /// Build a `CallHierarchyResponse` from shaped call records.
 fn call_hierarchy_response(
     p: &PositionParam,
-    direction: &str,
+    direction: CallDirection,
     calls: Vec<CallHierarchyCallRecord>,
 ) -> CallHierarchyResponse {
     let found = !calls.is_empty();
     let call_count = calls.len();
+    let label = direction.as_str();
     let summary = if found {
-        format!("Found {call_count} {direction} call(s).")
+        format!("Found {call_count} {label} call(s).")
     } else {
-        format!("No {direction} calls found at this position.")
+        format!("No {label} calls found at this position.")
     };
     CallHierarchyResponse {
         file_path: p.file_path.clone(),
@@ -1454,7 +1459,7 @@ fn call_hierarchy_response(
             line: p.line,
             character: p.character,
         },
-        direction: direction.to_string(),
+        direction,
         found,
         call_count,
         calls,
@@ -1887,7 +1892,7 @@ mod tests {
             selection_range: test_range(0, 3, 0, 9),
             data: None,
         };
-        let rec = call_hierarchy_item_record(&item);
+        let rec = call_hierarchy_item_record(item);
         assert_eq!(rec.name, "callee");
         assert_eq!(rec.kind, "function");
         // Location anchors on selection_range, one-based.
@@ -1913,10 +1918,10 @@ mod tests {
             line: 1,
             character: 2,
         };
-        let response = call_hierarchy_response(&p, "incoming", vec![]);
+        let response = call_hierarchy_response(&p, CallDirection::Incoming, vec![]);
         assert!(!response.found);
         assert_eq!(response.call_count, 0);
-        assert_eq!(response.direction, "incoming");
+        assert_eq!(response.direction, CallDirection::Incoming);
         assert!(response.summary.contains("No incoming calls"));
     }
 
@@ -1936,10 +1941,10 @@ mod tests {
             },
             from_ranges: vec![range_record(&test_range(2, 0, 2, 4))],
         };
-        let response = call_hierarchy_response(&p, "outgoing", vec![call]);
+        let response = call_hierarchy_response(&p, CallDirection::Outgoing, vec![call]);
         assert!(response.found);
         assert_eq!(response.call_count, 1);
-        assert_eq!(response.direction, "outgoing");
+        assert_eq!(response.direction, CallDirection::Outgoing);
         assert!(response.summary.contains("Found 1 outgoing call"));
     }
 
