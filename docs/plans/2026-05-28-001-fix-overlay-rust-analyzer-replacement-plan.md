@@ -1,6 +1,6 @@
 ---
 title: "fix: Drop rust-analyzer override from overlays.default"
-status: active
+status: completed
 date: 2026-05-28
 type: fix
 origin: https://github.com/billf/lspmux-cc/issues/2
