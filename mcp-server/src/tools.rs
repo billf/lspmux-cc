@@ -566,20 +566,33 @@ fn code_action_record(item: lsp_types::CodeActionOrCommand) -> CodeActionRecord 
     }
 }
 
+/// Deepest symbol nesting we descend into before dropping `children`. Real Rust
+/// files nest a handful of levels; this caps a pathological or hostile response
+/// so a degenerate tree can't overflow the stack and crash the server.
+const MAX_SYMBOL_DEPTH: usize = 64;
+
 fn document_symbol_record(symbol: lsp_types::DocumentSymbol) -> DocumentSymbolRecord {
-    DocumentSymbolRecord {
-        name: symbol.name,
-        detail: symbol.detail,
-        kind: symbol_kind_name(symbol.kind).to_string(),
-        range: range_record(&symbol.range),
-        selection_range: range_record(&symbol.selection_range),
-        children: symbol
-            .children
-            .unwrap_or_default()
-            .into_iter()
-            .map(document_symbol_record)
-            .collect(),
+    fn to_record(symbol: lsp_types::DocumentSymbol, depth: usize) -> DocumentSymbolRecord {
+        let children = if depth >= MAX_SYMBOL_DEPTH {
+            vec![]
+        } else {
+            symbol
+                .children
+                .unwrap_or_default()
+                .into_iter()
+                .map(|child| to_record(child, depth + 1))
+                .collect()
+        };
+        DocumentSymbolRecord {
+            name: symbol.name,
+            detail: symbol.detail,
+            kind: symbol_kind_name(symbol.kind).to_string(),
+            range: range_record(&symbol.range),
+            selection_range: range_record(&symbol.selection_range),
+            children,
+        }
     }
+    to_record(symbol, 0)
 }
 
 /// Shape a flat `SymbolInformation` into a (childless) symbol record. Flat
@@ -1028,7 +1041,7 @@ impl RustAnalyzerTools {
     /// List code actions (quick fixes, refactors) for a range.
     #[tool(
         name = "rust_code_actions",
-        description = "List the code actions (quick fixes, refactors) rust-analyzer offers for a range in a file. Each action carries its title, kind, and workspace edit as data; edits are NOT applied, so apply them yourself. Input line/character are zero-based; returned ranges are one-based."
+        description = "List the code actions (quick fixes, refactors) rust-analyzer offers for a range in a file. Each action carries its title, kind, and workspace edit as data; edits are NOT applied, so apply them yourself. Diagnostic-triggered quick fixes may be absent: this sends an empty diagnostics context, so actions keyed to a specific diagnostic at the range are not requested. Input line/character are zero-based; returned ranges are one-based."
     )]
     async fn code_actions(
         &self,
@@ -1150,19 +1163,13 @@ impl RustAnalyzerTools {
         params: Parameters<RenameParam>,
     ) -> Result<Json<RenameResponse>, McpError> {
         let p = &params.0;
-        validate_file_path(&p.file_path)?;
         if p.new_name.trim().is_empty() {
             return Err(McpError::invalid_params(
                 "new_name must not be empty".to_string(),
                 None,
             ));
         }
-        self.lsp
-            .ensure_file_open(&p.file_path)
-            .await
-            .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
-        let uri = file_uri(&p.file_path)
-            .map_err(|e| McpError::invalid_params(format!("invalid file path: {e}"), None))?;
+        let uri = self.open_file_uri(&p.file_path).await?;
 
         let rename_params = lsp_types::RenameParams {
             text_document_position: lsp_types::TextDocumentPositionParams {
@@ -1856,6 +1863,45 @@ mod tests {
         assert_eq!(rec.children[0].kind, "function");
         // One-based: input line 1 -> 2.
         assert_eq!(rec.children[0].range.start.line, 2);
+    }
+
+    #[test]
+    fn document_symbol_record_caps_deep_nesting() {
+        // Build a single chain far deeper than MAX_SYMBOL_DEPTH. A naive
+        // recursive shaper would descend the whole chain (and a hostile tree
+        // could overflow the stack); the cap drops children at the limit.
+        #[allow(deprecated)]
+        fn deep_symbol(remaining: usize) -> lsp_types::DocumentSymbol {
+            lsp_types::DocumentSymbol {
+                name: format!("level_{remaining}"),
+                detail: None,
+                kind: lsp_types::SymbolKind::MODULE,
+                tags: None,
+                deprecated: None,
+                range: test_range(0, 0, 1, 0),
+                selection_range: test_range(0, 0, 0, 1),
+                children: if remaining == 0 {
+                    None
+                } else {
+                    Some(vec![deep_symbol(remaining - 1)])
+                },
+            }
+        }
+
+        let depth = MAX_SYMBOL_DEPTH + 50;
+        let rec = document_symbol_record(deep_symbol(depth));
+
+        // Walk the shaped record and count how deep nesting actually goes.
+        let mut node = &rec;
+        let mut levels = 1;
+        while let Some(child) = node.children.first() {
+            node = child;
+            levels += 1;
+        }
+        // The node at depth == MAX_SYMBOL_DEPTH is shaped but has its children
+        // dropped, so the retained chain spans depths 0..=MAX_SYMBOL_DEPTH.
+        assert_eq!(levels, MAX_SYMBOL_DEPTH + 1);
+        assert!(node.children.is_empty());
     }
 
     #[test]
