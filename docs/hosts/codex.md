@@ -1,80 +1,33 @@
 # Codex Integration
 
-Codex uses `lspmux-cc` as a plain MCP server. Editors can keep using native LSP so long as they point at the same underlying `lspmux` service.
+Codex uses `lspmux-cc` as a plain MCP server. It does not use the LSP plugin path; editors can keep using their own LSP clients as long as they point at the same `lspmux server`.
 
 ## Install
 
-```bash
+Manual checkout:
+
+```sh
 ./setup core
 ./setup host codex
 ```
 
-`./setup core` validates that `rust-analyzer` is already available through
-`RUST_ANALYZER_PATH` or `PATH`; it does not download the binary.
+Nix:
 
-## Runtime Contract
-
-Export these variables for the MCP process:
-
-```bash
-export WORKSPACE_ROOT=/absolute/path/to/workspace
-export LSPMUX_BOOTSTRAP=auto
-export LSPMUX_PATH="$HOME/.cargo/bin/lspmux"
-export RUST_ANALYZER_PATH="$(command -v rust-analyzer)"
-export LSPMUX_CONFIG_PATH="$HOME/.config/lspmux/config.toml"
-export LSPMUX_CONNECT="${TMPDIR:-/tmp}/lspmux/lspmux.sock"
-export LSPMUX_CLIENT_KIND="codex_mcp"
-export LSPMUX_CLIENT_HOST="codex"
-export LSPMUX_SESSION_ID="codex-$(date +%s)-$$"
+```sh
+nix build
+nix build .#rust-analyzer-nightly
 ```
 
-`LSPMUX_CONNECT` accepts either a Unix socket path or a TCP endpoint like
-`tcp://127.0.0.1:27631`. `LSPMUX_SOCKET_PATH` is still accepted as a
-compatibility alias, but `LSPMUX_CONNECT` is the explicit name going forward.
+Use the built `result/bin/lspmux-cc-mcp` or place the flake packages in your environment. For a Claude-plugin-shaped Nix output, use `nix build .#plugin`; Codex only needs the MCP binary and environment.
 
-For reproducible Nix setups, prefer exporting `RUST_ANALYZER_PATH` from this
-flake's pinned package, for example via `nix build .#rust-analyzer` or a dev
-shell/Home Manager environment that places the binary on `PATH`.
+## Primary Config Path
 
-On macOS, the default `LSPMUX_CONFIG_PATH` is:
+Codex uses TOML config:
 
-```bash
-$HOME/Library/Application Support/lspmux/config.toml
-```
+- User-level: `~/.codex/config.toml`
+- Project-level: `.codex/config.toml`
 
-Launch the server with:
-
-```bash
-bin/lspmux-cc-mcp
-```
-
-## Tool Surface
-
-The MCP tool contract is intentionally Rust-specific and stable:
-
-- `rust_diagnostics`
-- `rust_hover`
-- `rust_goto_definition`
-- `rust_goto_implementation`
-- `rust_find_references`
-- `rust_workspace_symbol`
-- `rust_document_symbols`
-- `rust_code_actions`
-- `rust_rename`
-- `rust_call_hierarchy_incoming`
-- `rust_call_hierarchy_outgoing`
-- `rust_expand_macro`
-- `rust_server_status`
-- `rust_workspace_registry`
-
-`rust_code_actions` and `rust_rename` return edits as data; they never modify files.
-
-## Native TOML Configuration
-
-Codex uses TOML config files, not `.mcp.json`. You can configure lspmux-cc directly in Codex's config instead of using environment variables.
-
-**User-level:** `~/.codex/config.toml`
-**Project-level:** `.codex/config.toml`
+TCP loopback example:
 
 ```toml
 [mcp_servers.lspmux-rust-analyzer]
@@ -84,16 +37,62 @@ args = []
 [mcp_servers.lspmux-rust-analyzer.env]
 WORKSPACE_ROOT = "/absolute/path/to/workspace"
 LSPMUX_BOOTSTRAP = "auto"
+LSPMUX_CONNECT = "tcp://127.0.0.1:27631"
 LSPMUX_CLIENT_KIND = "codex_mcp"
 LSPMUX_CLIENT_HOST = "codex"
 ```
 
-Replace paths with your actual install locations.
+For a Nix-built default package, set `command` to the built binary:
 
-## Sandbox Modes
+```toml
+command = "/absolute/path/to/result/bin/lspmux-cc-mcp"
+```
 
-Codex supports three sandbox modes: `read-only`, `workspace-write`, and `danger-full-access`.
+If you want the pinned rust-analyzer from this flake, export or configure:
 
-For lspmux-cc, use `workspace-write`. The MCP server needs to read Rust source files in the workspace but doesn't write anything. `read-only` works too, since the MCP server only reads files and communicates over the Unix socket.
+```sh
+export RUST_ANALYZER_PATH=/absolute/path/to/rust-analyzer-nightly/bin/rust-analyzer
+```
 
-Codex doesn't support LSP plugins. Only the MCP tools listed above are available.
+## Runtime Contract
+
+| Variable | Recommended value | Notes |
+|----------|-------------------|-------|
+| `WORKSPACE_ROOT` | Absolute Rust workspace path | Used for rust-analyzer initialization. |
+| `LSPMUX_BOOTSTRAP` | `auto` | Reuses a reachable daemon or starts one on demand. |
+| `LSPMUX_CONNECT` | `tcp://127.0.0.1:27631` | Preferred sandbox-friendly endpoint. |
+| `LSPMUX_PATH` | Optional absolute path | Needed only if `lspmux` is not on `PATH`. |
+| `RUST_ANALYZER_PATH` | Optional absolute path | Use this for pinned Nix rust-analyzer or a custom binary. |
+| `LSPMUX_CONFIG_PATH` | Optional config path | Defaults to the platform lspmux config path. |
+| `LSPMUX_CLIENT_KIND` | `codex_mcp` | Telemetry identity. |
+| `LSPMUX_CLIENT_HOST` | `codex` | Telemetry host. |
+| `LSPMUX_SESSION_ID` | Any stable session id | Optional; generated if omitted. |
+
+`LSPMUX_SOCKET_PATH` is still accepted as a compatibility alias for older configs, but use `LSPMUX_CONNECT` for new Codex setups.
+
+## Transport
+
+For TCP loopback, set the lspmux config:
+
+```toml
+listen = "tcp://127.0.0.1:27631"
+connect = "tcp://127.0.0.1:27631"
+```
+
+For Unix sockets, omit `LSPMUX_CONNECT` or set it to the absolute socket path. TCP is usually simpler in sandboxed Codex sessions.
+
+## Verification
+
+In a Codex session, call:
+
+```text
+rust_server_status
+```
+
+Healthy signals:
+
+- `server_status` is `running`
+- `workspace_root` is the configured workspace
+- `readiness.health` becomes `ok` after indexing
+
+Then run `rust_diagnostics` on an absolute Rust file path to verify the full MCP-to-LSP path.
