@@ -221,6 +221,40 @@ Reference: ${SCRIPT_DIR}/docs/hosts/codex.md
 EOF
 }
 
+cmd_host_opencode() {
+    local ra_binary
+    ra_binary="$(resolve_rust_analyzer 2>/dev/null || echo /absolute/path/to/rust-analyzer)"
+    cat <<EOF
+opencode host adapter
+
+opencode wires lspmux-cc through opencode.json: an MCP server (always) and,
+optionally, an LSP override of the built-in "rust" server.
+
+MCP server "environment" block:
+  WORKSPACE_ROOT=/absolute/path/to/workspace
+  LSPMUX_BOOTSTRAP=auto
+  LSPMUX_CONNECT=tcp://127.0.0.1:27631
+  RUST_ANALYZER_PATH=${ra_binary}
+  LSPMUX_CONFIG_PATH=${LSPMUX_CONFIG_PATH}
+  LSPMUX_CLIENT_KIND=opencode_mcp
+  LSPMUX_CLIENT_HOST=opencode
+
+MCP server "command":
+  ${SCRIPT_DIR}/bin/lspmux-cc-mcp
+
+Optional LSP override (lsp.rust), to pool opencode's native Rust intelligence:
+  command: ${SCRIPT_DIR}/bin/lspmux client --server-path ${ra_binary}
+  env:     LSPMUX_CONNECT=tcp://127.0.0.1:27631, LSPMUX_CLIENT_KIND=opencode_lsp,
+           LSPMUX_CLIENT_HOST=opencode
+
+Keep WORKSPACE_ROOT in a project-scoped opencode.json, or set it to
+"{env:WORKSPACE_ROOT}" in a global config. The paste-ready opencode.json
+(MCP-only and MCP+LSP) is in the reference below.
+
+Reference: ${SCRIPT_DIR}/docs/hosts/opencode.md
+EOF
+}
+
 cmd_host_generic_mcp() {
     cat <<EOF
 Generic MCP adapter
@@ -384,6 +418,7 @@ Usage:
   ./setup core
   ./setup host claude-code
   ./setup host codex
+  ./setup host opencode
   ./setup host generic-mcp
   ./setup sandbox claude-code
   ./setup doctor
@@ -410,6 +445,7 @@ main() {
             case "${2:-}" in
                 claude-code) cmd_host_claude_code ;;
                 codex) cmd_host_codex ;;
+                opencode) cmd_host_opencode ;;
                 generic-mcp) cmd_host_generic_mcp ;;
                 *) die "unknown host adapter: ${2:-<missing>}" ;;
             esac

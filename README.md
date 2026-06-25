@@ -1,6 +1,6 @@
 # lspmux-cc
 
-Share one `rust-analyzer` instance across editors, Claude Code, Codex, and other MCP-capable agents in the same Rust workspace. Built on [lspmux](https://codeberg.org/p2502/lspmux) by p2502.
+Share one `rust-analyzer` instance across editors, Claude Code, Codex, opencode, and other MCP-capable agents in the same Rust workspace. Built on [lspmux](https://codeberg.org/p2502/lspmux) by p2502.
 
 ## How It Works
 
@@ -12,7 +12,7 @@ The transport is configurable. TCP loopback is the easiest sandbox-friendly path
 graph LR
     NV[Editor LSP clients<br/>rustaceanvim / Neovim / Vim / VS Code] -->|lspmux client| EP
     CC[Claude Code LSP] -->|plugin lspServers<br/>lspmux client| EP
-    MCP[MCP hosts<br/>Claude Code / Codex / generic MCP] -->|lspmux-cc-mcp<br/>spawns lspmux client| EP
+    MCP[MCP hosts<br/>Claude Code / Codex / opencode / generic MCP] -->|lspmux-cc-mcp<br/>spawns lspmux client| EP
     CLI[lspmux client CLI] --> EP
     EP{{Transport<br/>tcp://127.0.0.1:27631<br/>or Unix socket}}
     EP --> S[lspmux server<br/>spawned on demand]
@@ -93,6 +93,7 @@ Start with [docs/hosts/README.md](docs/hosts/README.md) for the comparison table
 |-------|---------------|
 | [Claude Code](docs/hosts/claude-code.md) | You want both Claude Code LSP routing and MCP tools. |
 | [Codex](docs/hosts/codex.md) | You want MCP tools in Codex. |
+| [opencode](docs/hosts/opencode.md) | You want opencode MCP tools, optionally with LSP routing. |
 | [Generic MCP](docs/hosts/generic-mcp.md) | You want to wire `lspmux-cc-mcp` into another MCP host. |
 | [rustaceanvim](docs/hosts/rustaceanvim.md) | You use rustaceanvim's built-in lspmux support. |
 | [Neovim LSP](docs/hosts/neovim.md) | You use Neovim's built-in LSP client or `nvim-lspconfig`. |

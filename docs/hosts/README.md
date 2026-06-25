@@ -8,6 +8,7 @@ For sandboxed agent hosts, prefer `LSPMUX_CONNECT=tcp://127.0.0.1:27631`. Unix s
 |------|------------------|----------------|--------------------------|----------------------|
 | [Claude Code](claude-code.md) | LSP and MCP | Claude plugin plus `~/.claude/settings.json` sandbox settings | TCP loopback for sandbox simplicity; Unix socket with exact `allowUnixSockets` allowlist | `rust_server_status` in Claude Code |
 | [Codex](codex.md) | MCP | `~/.codex/config.toml` or `.codex/config.toml` | TCP loopback | `rust_server_status` in Codex |
+| [opencode](opencode.md) | MCP and optional LSP | `opencode.json` (`mcp` plus optional `lsp.rust`) | TCP loopback | `rust_server_status` in opencode |
 | [Generic MCP](generic-mcp.md) | MCP | Host MCP command/env configuration | TCP loopback | `rust_server_status` in the host |
 | [rustaceanvim](rustaceanvim.md) | LSP | `vim.g.rustaceanvim` | TCP loopback | `:checkhealth vim.lsp` |
 | [Neovim LSP](neovim.md) | LSP | `vim.lsp.config` / `vim.lsp.enable` | TCP loopback or Unix socket | `:checkhealth vim.lsp` |
