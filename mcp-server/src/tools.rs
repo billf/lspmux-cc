@@ -1474,12 +1474,78 @@ fn call_hierarchy_response(
     }
 }
 
+/// Rewrite the `{"const": null, "nullable": true}` node into the standard
+/// `{"type": "null"}`, recursing through objects and arrays.
+///
+/// rmcp generates tool schemas with `schemars::transform::AddNullable`, which encodes
+/// an `Option<ComplexType>` field (one whose non-null branch is a `$ref`) as an `anyOf`
+/// branch `{"const": null, "nullable": true}`. That node constrains the value to only
+/// `null` while also carrying the non-standard `nullable` annotation, and opencode's MCP
+/// tool loader rejects it, failing the entire server registration. The standard
+/// `{"type": "null"}` form loads. Other `nullable` forms (e.g. `{"type": "string",
+/// "nullable": true}` from `Option<String>`) are valid schemas with an ignorable
+/// annotation and are left untouched.
+fn normalize_nullable_schema(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if matches!(map.get("const"), Some(serde_json::Value::Null))
+                && matches!(map.get("nullable"), Some(serde_json::Value::Bool(true)))
+            {
+                map.remove("const");
+                map.remove("nullable");
+                map.insert(
+                    "type".to_string(),
+                    serde_json::Value::String("null".to_string()),
+                );
+                return;
+            }
+            for child in map.values_mut() {
+                normalize_nullable_schema(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                normalize_nullable_schema(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Normalize a tool's input and output schemas for MCP-host compatibility.
+///
+/// Builds fresh `Arc`s: rmcp caches each schema `Arc` in a thread-local, so mutating the
+/// shared allocation in place (via `Arc::make_mut`/`get_mut`) would poison every later
+/// `list_tools` call. Clone the inner map, transform the clone, and re-wrap.
+fn normalize_tool_schemas(tool: &mut rmcp::model::Tool) {
+    let mut input = serde_json::Value::Object((*tool.input_schema).clone());
+    normalize_nullable_schema(&mut input);
+    if let serde_json::Value::Object(map) = input {
+        tool.input_schema = Arc::new(map);
+    }
+
+    if let Some(output) = tool.output_schema.as_deref() {
+        let mut output = serde_json::Value::Object(output.clone());
+        normalize_nullable_schema(&mut output);
+        if let serde_json::Value::Object(map) = output {
+            tool.output_schema = Some(Arc::new(map));
+        }
+    }
+}
+
 /// Delegation methods for `ServerHandler` integration.
 impl RustAnalyzerTools {
     /// List all available tools.
+    ///
+    /// Schemas are normalized for MCP-host compatibility; see
+    /// [`normalize_tool_schemas`].
     pub fn list_tools(&self) -> ListToolsResult {
+        let mut tools = self.tool_router.list_all();
+        for tool in &mut tools {
+            normalize_tool_schemas(tool);
+        }
         ListToolsResult {
-            tools: self.tool_router.list_all(),
+            tools,
             ..ListToolsResult::default()
         }
     }
@@ -2117,5 +2183,84 @@ mod tests {
             "is_preferred defaults to false when None"
         );
         assert!(rec.edit.is_none());
+    }
+
+    fn contains_toxic_null(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                (matches!(map.get("const"), Some(serde_json::Value::Null))
+                    && matches!(map.get("nullable"), Some(serde_json::Value::Bool(true))))
+                    || map.values().any(contains_toxic_null)
+            }
+            serde_json::Value::Array(items) => items.iter().any(contains_toxic_null),
+            _ => false,
+        }
+    }
+
+    /// The real invariant: across every registered tool, no input or output schema may
+    /// carry the `{const:null, nullable:true}` node after normalization. This runs the
+    /// production `normalize_tool_schemas` over the actual `tool_router` output, so a new
+    /// `Option<ComplexType>` field on any tool (or an rmcp shape change) is caught even on
+    /// a tool not named here.
+    #[test]
+    fn registered_tool_schemas_are_clean_after_normalize() {
+        let mut tools = RustAnalyzerTools::tool_router().list_all();
+
+        // rmcp/schemars still emits the toxic node on at least one tool. If this fails,
+        // the upstream encoding changed and the surgical rewrite must be revisited.
+        let toxic_before = tools.iter().any(|tool| {
+            tool.output_schema.as_deref().is_some_and(|schema| {
+                contains_toxic_null(&serde_json::Value::Object(schema.clone()))
+            })
+        });
+        assert!(
+            toxic_before,
+            "expected rmcp/schemars to emit a {{const:null, nullable:true}} node on some tool; \
+             upstream encoding may have changed"
+        );
+
+        for tool in &mut tools {
+            normalize_tool_schemas(tool);
+        }
+
+        for tool in &tools {
+            let input = serde_json::Value::Object((*tool.input_schema).clone());
+            assert!(
+                !contains_toxic_null(&input),
+                "input schema for {} still carries a toxic null node",
+                tool.name
+            );
+            if let Some(output) = tool.output_schema.as_deref() {
+                let output = serde_json::Value::Object(output.clone());
+                assert!(
+                    !contains_toxic_null(&output),
+                    "output schema for {} still carries a toxic null node",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_rewrites_const_null_nullable_node() {
+        let mut value = serde_json::json!({
+            "anyOf": [{"$ref": "#/$defs/X"}, {"const": null, "nullable": true}]
+        });
+        normalize_nullable_schema(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({"anyOf": [{"$ref": "#/$defs/X"}, {"type": "null"}]})
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_plain_nullable_untouched() {
+        // Valid schema with an ignorable annotation (Option<String>); opencode accepts it.
+        let mut value = serde_json::json!({"type": "string", "nullable": true});
+        normalize_nullable_schema(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "string", "nullable": true})
+        );
     }
 }

@@ -14,7 +14,7 @@ plugin to build.
 opencode reads config from (later sources override earlier ones):
 
 - Global: `~/.config/opencode/opencode.json`
-- Project: `opencode.json` or `.opencode/` at the project root
+- Project config: `opencode.json` at the project root
 
 opencode resolves the project root by walking up from the current directory to the
 nearest Git root. Keep the MCP block (which pins `WORKSPACE_ROOT`) in a *project-scoped*
