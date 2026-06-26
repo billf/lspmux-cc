@@ -58,7 +58,9 @@ impl ServerHandler for LspmuxMcpServer {
                  seem stale, use rust_server_status to check readiness instead of guessing.\n\
                  All file paths must be absolute. Tools are read-only and workspace-scoped.\n\
                  Use rust_server_status to confirm the correct workspace root and shared-service \
-                 bootstrap state."
+                 bootstrap state. If the workspace root is wrong, set WORKSPACE_ROOT in the \
+                 host's MCP env and reconnect; rust_workspace_registry lists the active \
+                 workspaces."
                     .into(),
             ),
             capabilities: ServerCapabilities {

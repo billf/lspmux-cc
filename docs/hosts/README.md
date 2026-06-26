@@ -16,8 +16,9 @@ For sandboxed agent hosts, prefer `LSPMUX_CONNECT=tcp://127.0.0.1:27631`. Unix s
 
 ## Troubleshooting (any MCP host)
 
-These steps use only the MCP tools, so they work from Claude Code, Codex, OpenCode, or any
-other host (the `diagnose-lspmux` skill wraps the same steps for Claude Code specifically).
+These steps use only the MCP tools, so they work from any MCP host (Claude Code, Codex, or a
+generic MCP host); the `diagnose-lspmux` skill wraps the same steps for Claude Code
+specifically.
 
 1. **Check liveness and workspace.** Call `rust_server_status`. Healthy: `server_status` is
    `running` and `workspace_root` is your workspace. `readiness.health` becomes `ok` once

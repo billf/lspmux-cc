@@ -67,8 +67,9 @@ fn internal_error(msg: impl Into<String>) -> McpError {
 /// `rust_server_status` and retry rather than treat the operation as fatal.
 fn lsp_request_error(operation: &str, error: &impl std::fmt::Display) -> McpError {
     internal_error(format!(
-        "{operation} failed: {error}. rust-analyzer may still be indexing; \
-         check rust_server_status and retry."
+        "{operation} failed: {error}. If rust-analyzer may still be indexing, \
+         check rust_server_status and retry; otherwise verify the file path and \
+         that the position is on a valid symbol."
     ))
 }
 
@@ -164,6 +165,11 @@ pub struct WorkspaceSymbolParam {
 }
 
 /// Tool parameters: file path + position + an optional result cap.
+///
+/// Deliberately separate from `PositionParam` rather than adding `max_results`
+/// there: the other position tools (hover, goto, call hierarchy, expand-macro)
+/// do not cap their output, so adding the field to the shared struct would
+/// advertise a parameter those tools ignore.
 #[derive(Deserialize, JsonSchema)]
 pub struct ReferencesParam {
     /// Absolute path to the Rust source file.
@@ -265,7 +271,11 @@ pub struct LocationsResponse {
     pub file_path: String,
     pub requested_position: PositionRecord,
     pub found: bool,
+    /// Number of results returned, after any `max_results` cap.
     pub location_count: usize,
+    /// Total results available before the `max_results` cap. Equal to
+    /// `location_count` unless `truncated` is true.
+    pub total_count: usize,
     /// True when results were capped by `max_results` and some were dropped.
     pub truncated: bool,
     pub locations: Vec<LocationRecord>,
@@ -284,6 +294,9 @@ pub struct WorkspaceSymbolRecord {
 pub struct WorkspaceSymbolsResponse {
     pub query: String,
     pub symbol_count: usize,
+    /// Total matches available before the `max_results` cap. Equal to
+    /// `symbol_count` unless `truncated` is true.
+    pub total_count: usize,
     /// True when results were capped by `max_results` and some were dropped.
     pub truncated: bool,
     pub symbols: Vec<WorkspaceSymbolRecord>,
@@ -619,6 +632,36 @@ fn resolve_max_results(requested: Option<u32>) -> usize {
     })
 }
 
+/// Apply the resolved result cap to a list, returning the (possibly truncated)
+/// items, the pre-cap total, and whether truncation occurred. Centralizing this
+/// keeps the `truncated` flag, the returned length, and the total in sync.
+fn apply_cap<T>(mut items: Vec<T>, max_results: Option<u32>) -> (Vec<T>, usize, bool) {
+    let total = items.len();
+    let cap = resolve_max_results(max_results);
+    let truncated = total > cap;
+    if truncated {
+        items.truncate(cap);
+    }
+    (items, total, truncated)
+}
+
+/// Summary line for a truncated list result. Leads with "Truncated" so an agent
+/// reading only the summary still sees it, and stops suggesting a larger
+/// `max_results` once the hard cap is already hit.
+fn truncation_note(noun: &str, returned: usize, total: usize) -> String {
+    if returned >= MAX_RESULTS_LIMIT {
+        format!(
+            "Truncated: showing the first {returned} of {total} {noun}. This is the \
+             {MAX_RESULTS_LIMIT}-result hard cap; narrow the query to see the rest."
+        )
+    } else {
+        format!(
+            "Truncated: showing the first {returned} of {total} {noun}. Pass a larger \
+             max_results (up to {MAX_RESULTS_LIMIT}) to see more."
+        )
+    }
+}
+
 fn document_symbol_record(symbol: lsp_types::DocumentSymbol) -> DocumentSymbolRecord {
     fn to_record(symbol: lsp_types::DocumentSymbol, depth: usize) -> DocumentSymbolRecord {
         let children = if depth >= MAX_SYMBOL_DEPTH {
@@ -881,6 +924,8 @@ impl RustAnalyzerTools {
             },
             found,
             location_count,
+            // Not a list tool: definition/implementation results are never capped.
+            total_count: location_count,
             truncated: false,
             locations,
             summary,
@@ -895,7 +940,7 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Find all references to a symbol at a specific position. Returns one-based file locations."
+        description = "Find all references to a symbol at a specific position. Returns one-based file locations. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total."
     )]
     async fn find_references(
         &self,
@@ -909,7 +954,7 @@ impl RustAnalyzerTools {
             .await
             .map_err(|e| internal_error(format!("failed to synchronize file with lspmux: {e}")))?;
 
-        let mut locations = self
+        let locations = self
             .lsp
             .find_references(&p.file_path, p.line, p.character)
             .await
@@ -919,21 +964,13 @@ impl RustAnalyzerTools {
             .map(|location| location_record(&location.uri, &location.range))
             .collect::<Vec<_>>();
 
-        let total = locations.len();
-        let cap = resolve_max_results(p.max_results);
-        let truncated = total > cap;
-        if truncated {
-            locations.truncate(cap);
-        }
-
+        let (locations, total_count, truncated) = apply_cap(locations, p.max_results);
         let found = !locations.is_empty();
         let location_count = locations.len();
         let summary = if !found {
             "No references found at this position.".to_string()
         } else if truncated {
-            format!(
-                "Found {total} reference(s); showing the first {location_count} (truncated, raise max_results up to {MAX_RESULTS_LIMIT})."
-            )
+            truncation_note("reference(s)", location_count, total_count)
         } else {
             format!("Found {location_count} reference(s).")
         };
@@ -946,6 +983,7 @@ impl RustAnalyzerTools {
             },
             found,
             location_count,
+            total_count,
             truncated,
             locations,
             summary,
@@ -960,7 +998,7 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds."
+        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total."
     )]
     async fn workspace_symbol(
         &self,
@@ -973,7 +1011,7 @@ impl RustAnalyzerTools {
             .await
             .map_err(|e| lsp_request_error("workspace symbol search", &e))?;
 
-        let mut records = match symbols {
+        let records = match symbols {
             Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols)) => symbols
                 .into_iter()
                 .map(|symbol| WorkspaceSymbolRecord {
@@ -1001,19 +1039,15 @@ impl RustAnalyzerTools {
             None => vec![],
         };
 
-        let total = records.len();
-        let cap = resolve_max_results(params.0.max_results);
-        let truncated = total > cap;
-        if truncated {
-            records.truncate(cap);
-        }
-
+        let (records, total_count, truncated) = apply_cap(records, params.0.max_results);
         let symbol_count = records.len();
         let summary = if symbol_count == 0 {
             format!("No symbols found matching {query:?}.")
         } else if truncated {
-            format!(
-                "Found {total} symbol(s) matching {query:?}; showing the first {symbol_count} (truncated, raise max_results up to {MAX_RESULTS_LIMIT})."
+            truncation_note(
+                &format!("symbol(s) matching {query:?}"),
+                symbol_count,
+                total_count,
             )
         } else {
             format!("Found {symbol_count} symbol(s) matching {query:?}.")
@@ -1022,6 +1056,7 @@ impl RustAnalyzerTools {
         Ok(Json(WorkspaceSymbolsResponse {
             query: query.clone(),
             symbol_count,
+            total_count,
             truncated,
             symbols: records,
             summary,
@@ -1383,6 +1418,8 @@ impl RustAnalyzerTools {
             },
             found,
             location_count,
+            // Not a list tool: definition/implementation results are never capped.
+            total_count: location_count,
             truncated: false,
             locations,
             summary,
@@ -1890,6 +1927,44 @@ mod tests {
             MAX_RESULTS_LIMIT,
             "oversized requests clamp to the hard cap"
         );
+    }
+
+    #[test]
+    fn apply_cap_truncates_and_reports_total() {
+        // Under the cap: nothing dropped, total equals the returned length.
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3], Some(10));
+        assert_eq!(items, vec![1, 2, 3]);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+
+        // Exactly at the cap: not truncated (cap is inclusive).
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3], Some(3));
+        assert_eq!(items.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+
+        // Over the cap: kept down to the cap, total preserves the pre-cap count.
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3, 4, 5], Some(2));
+        assert_eq!(items, vec![1, 2]);
+        assert_eq!(total, 5);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn references_param_deserializes_with_optional_max_results() {
+        let json = serde_json::json!({
+            "file_path": "/abs/file.rs", "line": 3, "character": 7
+        });
+        let param: ReferencesParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.line, 3);
+        assert_eq!(param.character, 7);
+        assert_eq!(param.max_results, None, "max_results is optional");
+
+        let json = serde_json::json!({
+            "file_path": "/abs/file.rs", "line": 0, "character": 0, "max_results": 5
+        });
+        let param: ReferencesParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(5));
     }
 
     #[test]
