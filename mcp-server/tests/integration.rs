@@ -50,8 +50,7 @@ fn binary_exists(name: &str) -> bool {
     StdCommand::new("which")
         .arg(name)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Count direct child processes of `parent_pid` whose command contains `needle`.
