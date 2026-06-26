@@ -646,6 +646,17 @@ impl RustAnalyzerTools {
         }
     }
 
+    // Annotation invariant: every tool in this impl is read-only and
+    // workspace-scoped, so each `annotations(...)` block sets
+    // `read_only_hint = true` and `open_world_hint = false`. Read-only means no
+    // user-observable mutation: the tools never write the user's files
+    // (`rust_rename` and `rust_code_actions` return a workspace edit as data for
+    // the caller to apply). The `didOpen`/`didChange` that `ensure_file_open`
+    // sends is a read-side sync mirroring current on-disk content into
+    // rust-analyzer; it carries no edit of ours and is safe to repeat. The
+    // `tool_annotations_*` test pins these values so a future tool cannot
+    // silently drop or flip them.
+
     /// Get diagnostics (errors and warnings) for a Rust file.
     #[tool(
         name = "rust_diagnostics",
@@ -1727,6 +1738,89 @@ const fn error_code_name(code: ErrorCode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `rust_*` tool must advertise itself as read-only and
+    /// workspace-scoped with a human-readable title. Pins the R1 annotations so
+    /// a future edit or rmcp upgrade cannot silently drop or flip them.
+    #[test]
+    fn tool_annotations_are_read_only_and_titled() {
+        let tools = [
+            (
+                RustAnalyzerTools::diagnostics_tool_attr(),
+                "Rust Diagnostics",
+            ),
+            (RustAnalyzerTools::hover_tool_attr(), "Rust Hover"),
+            (
+                RustAnalyzerTools::goto_definition_tool_attr(),
+                "Rust Go to Definition",
+            ),
+            (
+                RustAnalyzerTools::find_references_tool_attr(),
+                "Rust Find References",
+            ),
+            (
+                RustAnalyzerTools::workspace_symbol_tool_attr(),
+                "Rust Workspace Symbol Search",
+            ),
+            (
+                RustAnalyzerTools::server_status_tool_attr(),
+                "Rust Server Status",
+            ),
+            (
+                RustAnalyzerTools::workspace_registry_tool_attr(),
+                "Rust Workspace Registry",
+            ),
+            (
+                RustAnalyzerTools::code_actions_tool_attr(),
+                "Rust Code Actions",
+            ),
+            (
+                RustAnalyzerTools::document_symbols_tool_attr(),
+                "Rust Document Symbols",
+            ),
+            (RustAnalyzerTools::rename_tool_attr(), "Rust Rename Symbol"),
+            (
+                RustAnalyzerTools::goto_implementation_tool_attr(),
+                "Rust Go to Implementation",
+            ),
+            (
+                RustAnalyzerTools::call_hierarchy_incoming_tool_attr(),
+                "Rust Incoming Calls",
+            ),
+            (
+                RustAnalyzerTools::call_hierarchy_outgoing_tool_attr(),
+                "Rust Outgoing Calls",
+            ),
+            (
+                RustAnalyzerTools::expand_macro_tool_attr(),
+                "Rust Expand Macro",
+            ),
+        ];
+
+        assert_eq!(tools.len(), 14, "all tools must be covered by this test");
+
+        for (tool, expected_title) in tools {
+            let name = tool.name.clone();
+            let annotations = tool
+                .annotations
+                .unwrap_or_else(|| panic!("{name} is missing tool annotations"));
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(true),
+                "{name} must set read_only_hint = true"
+            );
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(false),
+                "{name} must set open_world_hint = false"
+            );
+            assert_eq!(
+                annotations.title.as_deref(),
+                Some(expected_title),
+                "{name} title mismatch"
+            );
+        }
+    }
 
     #[test]
     fn validate_file_path_rejects_relative() {
