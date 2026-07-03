@@ -941,6 +941,87 @@ mod tests {
         }
     }
 
+    /// The MCP tool path re-syncs current on-disk content on every call:
+    /// `ensure_file_open` sends `didOpen` first, then `didChange` whenever the
+    /// file changed on disk, and skips the notification when it has not. This is
+    /// what keeps diagnostics fresh for every runtime without the Claude-only
+    /// `PostToolUse` hook, which never fires for Codex or `OpenCode`.
+    #[tokio::test]
+    #[allow(clippy::significant_drop_tightening)]
+    async fn ensure_file_open_resyncs_on_disk_change() {
+        // `cat` accepts the notifications on stdin so notify() succeeds without a
+        // real language server.
+        let mut child = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+
+        let client = LspClient {
+            child_stdin: Arc::new(Mutex::new(stdin)),
+            next_id: AtomicI64::new(1),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            opened_files: Mutex::new(HashMap::new()),
+            child: Arc::new(Mutex::new(child)),
+            // Mark the child alive so notify() will write to `cat`'s stdin.
+            alive: Arc::new(AtomicBool::new(true)),
+            workspace_root: tokio::sync::Mutex::new(None),
+            server_version: tokio::sync::Mutex::new(None),
+            readiness: Arc::new(tokio::sync::Mutex::new(ReadinessState::default())),
+        };
+
+        let path = std::env::temp_dir().join(format!("lspmux_r5_{}.rs", std::process::id()));
+        let path_str = path.to_str().unwrap().to_string();
+
+        // First call: didOpen, version 0.
+        std::fs::write(&path, "fn a() {}\n").unwrap();
+        client.ensure_file_open(&path_str).await.unwrap();
+        assert_eq!(
+            client
+                .opened_files
+                .lock()
+                .await
+                .get(&path_str)
+                .map(|(version, _)| *version),
+            Some(0),
+            "first open records version 0"
+        );
+
+        // Disk content changes: the next call must re-sync (didChange, version 1).
+        std::fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
+        client.ensure_file_open(&path_str).await.unwrap();
+        assert_eq!(
+            client
+                .opened_files
+                .lock()
+                .await
+                .get(&path_str)
+                .map(|(version, _)| *version),
+            Some(1),
+            "changed disk content re-syncs and bumps the version"
+        );
+
+        // Unchanged content: no notification, version stays at 1.
+        client.ensure_file_open(&path_str).await.unwrap();
+        assert_eq!(
+            client
+                .opened_files
+                .lock()
+                .await
+                .get(&path_str)
+                .map(|(version, _)| *version),
+            Some(1),
+            "unchanged content skips didChange"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut child = client.child.lock().await;
+            let _ = child.kill().await;
+        }
+    }
+
     #[tokio::test]
     async fn server_status_notification_updates_readiness() {
         let readiness = Arc::new(tokio::sync::Mutex::new(ReadinessState::default()));
