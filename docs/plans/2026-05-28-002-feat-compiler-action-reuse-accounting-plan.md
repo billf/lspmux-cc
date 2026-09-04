@@ -1,7 +1,8 @@
 ---
 title: "feat: Measure compiler actions and artifact reuse (REV-005)"
-status: active
+status: partial
 date: 2026-05-28
+audited: 2026-09-04
 type: feat
 issue_id: REV-005
 origin: todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md
@@ -11,13 +12,39 @@ origin: todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md
 
 ## Summary
 
-The repo's core promise is reducing redundant compile work across editors and agents, but it can't currently tell when rust-analyzer forced new cargo/rustc work versus reused fresh artifacts. This plan adds a compiler-action accounting plane: capture cargo JSON `compiler-artifact` / `build-finished` events from rust-analyzer's flycheck, count `fresh` (reused) vs rebuilt outcomes, attribute them to workspace + client kind (the REV-004 attribution groundwork already landed), and expose the counts through `rust_server_status` (or a sibling tool). Recommended direction from the todo is Option 2 (wrap cargo for rust-analyzer-owned processes), but the emitted event schema stays cargo-JSON-friendly so Option 1 (parse flycheck output) remains a fallback.
+Partially delivered. `rust_server_status` already exposes a best-effort
+`compiler_accounting` snapshot by parsing the most recently modified
+`target/flycheck*/stdout` cargo-JSON file in the selected workspace. It reports
+artifact, fresh, rebuilt, build-script, build-finished, and parse-error counts.
+
+That is useful local observability, but it is not the original attribution
+system: it does not establish action windows, distinguish clients, or guarantee
+that the chosen flycheck file belongs to the current MCP session. The original
+wrapper proposal also leaves its event transport and rust-analyzer configuration
+contract unresolved. Treat that as a separate design-and-delivery effort rather
+than expanding this low-risk telemetry slice into cross-process plumbing.
+
+## Audit and composition boundary
+
+| Slice | State | Evidence |
+|---|---|---|
+| Parse cargo JSON artifact freshness | delivered | `TelemetryState::refresh_compiler_accounting` parses `target/flycheck*/stdout`. |
+| Expose a status snapshot | delivered | `rust_server_status` returns `compiler_accounting`. |
+| Action start/finish lifecycle | not delivered | No wrapper or event sink exists. |
+| Workspace and client-kind attribution | not delivered | The snapshot is selected only by workspace file recency. |
+| `sccache` deltas and end-to-end proof | not delivered | No sampling or dedicated integration test exists. |
+
+Keep the delivered scanner as a read-only, best-effort metric. A future precise
+accounting plan must first choose and test a durable event boundary (for example,
+a daemon-owned event endpoint or a versioned append-only stream), then separately
+wire a cargo wrapper. It must not use a mutable `target/` scan as evidence of
+per-client attribution.
 
 ---
 
 ## Problem Frame
 
-The project can validate "one shared rust-analyzer process per worktree" (proven by the M1 integration test) but **not** "did that reduce duplicate compile activity." There is no code in `mcp-server/` that reads cargo JSON, rustc wrapper output, or rust-analyzer flycheck/build status. The only runtime status surfaced today is `RuntimeStatus` (`mcp-server/src/bootstrap.rs:150-188`, exposed via `rust_server_status` at `mcp-server/src/tools.rs:603-700`), which carries daemon/workspace fields but no build or artifact counters.
+The project can validate "one shared rust-analyzer process per worktree" (proven by the M1 integration test), but it cannot yet show that this reduced duplicate compiler activity for a particular client. The delivered `compiler_accounting` scanner reads local cargo JSON, but it has no action lifecycle, client attribution, or session ownership.
 
 Local evidence that the needed signal exists: `mcp-server/target/flycheck0/stdout` contains cargo JSON messages such as `compiler-artifact` with `"fresh": true` — a direct reuse-vs-rebuild signal.
 
@@ -40,13 +67,16 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 
 ## Key Technical Decisions
 
-**KTD1 — Capture mechanism: cargo wrapper (Option 2), schema kept Option-1-compatible.** Introduce a thin wrapper that rust-analyzer's flycheck invokes in place of `cargo` (via rust-analyzer's `check.overrideCommand` / `CARGO`-style env in the lspmux-launched toolchain environment). The wrapper streams the child's cargo JSON through unchanged (so editor behavior is identical) while tee-ing it to a parser that emits structured accounting events. Because the wrapper parses the same cargo JSON that flycheck stdout carries, Option 1 (parse flycheck output directly) stays a viable fallback without schema change.
-
-*Rationale:* The todo marks Option 2 recommended — strongest attribution, correlates to worktree/process identity, and can sample `sccache --show-stats` deltas around a build window. Option 3 (external process observation) is rejected (weak attribution, platform-specific, high risk).
+**KTD1 — Keep the current scanner separate from precise event ingestion.** The
+delivered scanner reads cargo JSON after the fact and must remain labelled
+best-effort. Do not add a cargo wrapper until a separate plan defines a durable
+event transport, ownership/authentication, retention, and the exact
+rust-analyzer configuration contract. A wrapper without that boundary can alter
+flycheck behavior while still failing to attribute its output correctly.
 
 **KTD2 — Event vocabulary stays narrow.** `compiler_action_started`, `compiler_action_finished`, `artifact_reused`, `artifact_rebuilt`, `sccache_stats_delta`. No broader taxonomy in the first pass. Direct-editor `cargo test`/`cargo clippy` reuse is a separate downstream measurement, not a blocker.
 
-**KTD3 — Counters live in the telemetry layer, exposed through status.** Accounting state belongs in `mcp-server/src/telemetry.rs` (alongside existing client-identity + latency accounting), aggregated per `(workspace, client_kind)`. `rust_server_status` gains a `build_accounting` sub-object rather than a new tool, keeping the surface small (a sibling tool is acceptable if the status response grows unwieldy — decide at implementation).
+**KTD3 — Precise counters belong in telemetry and extend `compiler_accounting`.** Keep the existing status field rather than introducing a second name. A future attributable implementation may aggregate by `(workspace, client_kind)` only after its event boundary establishes those values; a sibling tool is unnecessary unless the status payload becomes unwieldy.
 
 **KTD4 — Env propagation through `config/lspmux.toml`.** The wrapper path/flag must reach the rust-analyzer-owned process. `config/lspmux.toml` already has a `pass_environment` allowlist (`CARGO_HOME`, `RUSTUP_HOME`, `PATH`, `HOME`, `USER`, plus the `LSPMUX_CLIENT_*` vars); add the wrapper's control var(s) there so only the intended processes are wrapped.
 
@@ -54,7 +84,7 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 
 ## Implementation Units
 
-### U1. Define the accounting event schema and counters in telemetry
+### U1. Define an attributable event schema and counters in telemetry — deferred
 
 **Goal:** A typed, cargo-JSON-friendly event vocabulary and per-`(workspace, client_kind)` counters.
 
@@ -78,7 +108,7 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 
 **Verification:** Counter math unit tests pass; snapshot serializes to the documented schema.
 
-### U2. Cargo-JSON parser that maps cargo messages to accounting events
+### U2. Cargo-JSON parser that maps cargo messages to accounting events — partially delivered
 
 **Goal:** Turn a stream of cargo JSON lines into U1 events.
 
@@ -87,8 +117,8 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 **Dependencies:** U1.
 
 **Files:**
-- `mcp-server/src/build_accounting.rs` (new; parser) and `mcp-server/src/lib.rs` (`pub mod build_accounting;`)
-- `mcp-server/src/build_accounting.rs` tests, using captured fixtures from `mcp-server/target/flycheck0/stdout`
+- `mcp-server/src/telemetry.rs` (the delivered best-effort scanner and any future parser boundary)
+- committed test fixtures under `mcp-server/tests/fixtures/` if a parser is extracted
 
 **Approach:** Parse line-delimited cargo JSON. Recognize `compiler-artifact` (read `fresh`), `build-script-executed`, and `build-finished`. Emit U1 events. Ignore unrecognized message kinds. Robust to partial/non-JSON lines (flycheck interleaves human output).
 
@@ -103,13 +133,14 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 
 **Verification:** Parser turns the committed fixture into the documented counts.
 
-### U3. Cargo wrapper that tees cargo JSON to the parser
+### U3. Cargo wrapper that tees cargo JSON to the parser — split out
 
 **Goal:** A wrapper binary/shim that rust-analyzer flycheck invokes, passing cargo output through unchanged while feeding U2.
 
 **Requirements:** R1, R3.
 
-**Dependencies:** U2.
+**Dependencies:** A separately approved event-ingestion design; do not start
+from this plan.
 
 **Files:**
 - `mcp-server/src/bin/cargo-accounting-wrapper.rs` (new bin) OR a shell shim under `bin/` — decide at implementation (see Open Questions)
@@ -128,7 +159,7 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 
 **Verification:** Transparency test green; wrapped fake-cargo run produces correct counts attributed to the active workspace/client.
 
-### U4. Expose build/reuse stats through `rust_server_status`
+### U4. Expose build/reuse stats through `rust_server_status` — delivered for the best-effort snapshot
 
 **Goal:** Surface recent accounting to agents.
 
@@ -137,20 +168,20 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 **Dependencies:** U1.
 
 **Files:**
-- `mcp-server/src/bootstrap.rs` (extend `RuntimeStatus` with a `build_accounting` sub-object) — or `mcp-server/src/tools.rs` if a sibling tool is chosen
+- `mcp-server/src/tools.rs` (extend the existing `compiler_accounting` response object if attributable counters are delivered)
 - `mcp-server/src/tools.rs` (`rust_server_status` response shaping at ~603-700)
 - `mcp-server/src/tools.rs` / `tests/` response-shape test
 
-**Approach:** Add a nested `build_accounting` field (reused, rebuilt, last-window timestamps, per-client breakdown) to the status response. Keep it additive so existing `RuntimeStatus` consumers are unaffected.
+**Approach:** Extend `compiler_accounting` with reused, rebuilt, action-window timestamps, and per-client breakdown only after those values have a durable event source. Keep additions backward-compatible.
 
 **Test scenarios:**
-- Covers R4: status response includes `build_accounting` with reused/rebuilt counts after events are recorded.
+- Covers R4: status response includes attributable reused/rebuilt counts after events are recorded.
 - Edge: no events yet → field present with zeroed counts (not absent), so agents can rely on the shape.
 - Integration: recording events via U1 then calling status reflects them.
 
 **Verification:** `rust_server_status` JSON carries the counters; schema documented.
 
-### U5. sccache integration doc + accounting schema doc
+### U5. sccache integration doc + accounting schema doc — deferred with U3
 
 **Goal:** Explain what is measured, how to read it, and how it cooperates with `sccache`.
 
@@ -166,7 +197,7 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 
 **Verification:** Doc explains the event vocabulary, the status field, and the sccache relationship.
 
-### U6. Integration test validating the accounting schema on a small workspace
+### U6. Integration test validating the accounting schema on a small workspace — split by metric level
 
 **Goal:** End-to-end proof on a minimal cargo workspace.
 
@@ -175,7 +206,7 @@ This todo's prior pass deliberately deferred the actual compiler-action capture;
 **Dependencies:** U2, U3, U4.
 
 **Files:**
-- `mcp-server/tests/build_accounting.rs` (new integration test, `#[ignore]`-gated like existing integration tests if it needs real cargo)
+- `mcp-server/tests/compiler_accounting.rs` (new integration test, `#[ignore]`-gated if it needs real cargo)
 
 **Approach:** Drive a tiny fixture crate through the wrapper (or feed captured cargo JSON to the parser for a hermetic variant), then assert the status response reports the expected reused/rebuilt split. Mirror the `#[ignore]` + binary-availability pattern in `mcp-server/tests/integration.rs`.
 
@@ -195,7 +226,7 @@ In scope: rust-analyzer-induced cargo action accounting (counts, reuse/rebuild, 
 - Direct-editor `cargo test` / `cargo clippy` reuse measurement (explicitly a separate downstream measurement per the todo).
 - Cache hit/miss correlation beyond `sccache_stats_delta` sampling.
 
-Out of scope: replacing or configuring `sccache` itself (lives outside this repo); eBPF/process-tree observation (Option 3, rejected).
+Out of scope: replacing or configuring `sccache` itself (lives outside this repo); eBPF/process-tree observation; and cross-process wrapper delivery without its own event-ingestion contract.
 
 ---
 
@@ -221,7 +252,7 @@ Out of scope: replacing or configuring `sccache` itself (lives outside this repo
 1. Unit: `cargo test --manifest-path mcp-server/Cargo.toml` covers U1 counter math and U2 parser fixtures.
 2. Transparency: U3 wrapper output is byte-identical to bare cargo on a sample command.
 3. Integration: U6 small-workspace test shows rebuilt-then-reused across two builds, attributed to workspace+client.
-4. `rust_server_status` returns `build_accounting` with non-trivial counts after a build window.
+4. `rust_server_status` returns attributable `compiler_accounting` counts after a build window.
 5. `cargo clippy --manifest-path mcp-server/Cargo.toml --all-targets -- -W clippy::nursery -W clippy::pedantic` stays clean.
 
 ---
@@ -232,4 +263,6 @@ Out of scope: replacing or configuring `sccache` itself (lives outside this repo
 - Verified locations: `RuntimeStatus` at `mcp-server/src/bootstrap.rs:150-188`; `rust_server_status` at `mcp-server/src/tools.rs:603-700`; client identity + latency accounting in `mcp-server/src/telemetry.rs`; `pass_environment` in `config/lspmux.toml`.
 - Local evidence: `mcp-server/target/flycheck0/stdout` (`compiler-artifact`, `fresh: true`).
 - Related (done): REV-004 attribution groundwork; `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md`.
-- Note: ARCH-1 (lib/bin split, `docs/brainstorms/2026-05-04-mcp-server-workspace-split-requirements.md`) is not done; `build_accounting.rs` and the parser go in the existing library crate (`lib.rs`), reachable by both the binary and tests.
+- Audit note: the crate already has a library target and external `LspClient`
+  integration coverage. Exposing the MCP tool router from the library remains a
+  separate design choice, not a prerequisite for parser or telemetry tests.

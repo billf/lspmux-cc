@@ -1,8 +1,9 @@
 ---
 title: "feat: Expand the MCP LSP tool surface (REV-010)"
-status: active
+status: completed
 date: 2026-05-28
 deepened: 2026-06-01
+completed: 2026-06-01
 type: feat
 issue_id: REV-010
 origin: todos/2026-05-28-expand-lsp-tool-surface.md
@@ -12,13 +13,27 @@ origin: todos/2026-05-28-expand-lsp-tool-surface.md
 
 ## Summary
 
-`mcp-server/src/tools.rs` exposes six tools (`rust_diagnostics`, `rust_hover`, `rust_goto_definition`, `rust_find_references`, `rust_workspace_symbol`, `rust_server_status`). Several rust-analyzer capabilities a human editor uses daily are unreachable by an agent, forcing manual edits, full-file reads, and "wait and retry" guessing. This plan adds new MCP tools — code actions, document symbols, rename, readiness signal, call hierarchy, go-to-implementation, expand-macro — each wrapping the corresponding LSP request and returning edits/locations as data without applying them. Expanding advertised `ClientCapabilities` (AGENT-7) lands first because rust-analyzer may withhold features otherwise.
+Completed. The server now advertises the required capabilities and exposes the
+planned read-only tools: code actions, document symbols, rename, call hierarchy,
+go-to-implementation, and macro expansion. Readiness had already shipped when
+this plan was deepened. The tool list and usage live in the current MCP docs;
+the implementation detail below is retained as the delivery record.
+
+## Completion audit
+
+- U1 shipped in `feat(lsp): advertise code action, rename, symbol, call-hierarchy caps`.
+- U2–U4 and U6–U7 shipped in `feat(tools): add code action, symbol, rename,
+  call-hierarchy, macro tools`.
+- U5 was already satisfied by the existing `experimental/serverStatus` readiness
+  path; no redundant `$/progress` channel or derived `indexing` field was added.
+- Follow-up hardening added shared tool preludes, deterministic response shaping,
+  result caps, and structured-output tests.
 
 ---
 
 ## Problem Frame
 
-The current six tools (verified locations: `rust_diagnostics` `tools.rs:309`, `rust_hover` `:387`, `rust_goto_definition` `:437`, `rust_find_references` `:496`, `rust_workspace_symbol` `:544`, `rust_server_status` `:603`) are registered via the rmcp `#[tool_router]` macro (`mcp-server/src/tools.rs:286-289`). `ClientCapabilities` is `ClientCapabilities::default()` with only an `experimental` serverStatus override (`mcp-server/src/lsp_client.rs:236-240`); default capabilities advertise little, so rust-analyzer may not offer code actions, rename, call hierarchy, etc.
+At plan creation, the server exposed six tools and used `ClientCapabilities::default()` with only an `experimental` serverStatus override. The capability expansion and additional tools described below were delivered; exact source offsets are historical and intentionally not maintained here.
 
 Gaps from the 2026-03-18 review (AGENT-1..8):
 - **AGENT-1 code actions:** no `textDocument/codeAction`; agent guesses instead of applying RA's quick fix.
@@ -30,7 +45,10 @@ Gaps from the 2026-03-18 review (AGENT-1..8):
 - **AGENT-7 client capabilities:** prerequisite — must advertise the features the new tools need.
 - **AGENT-8 expand-macro:** no `rust-analyzer/expandMacro`.
 
-ARCH-1 (lib/bin split, `docs/brainstorms/2026-05-04-mcp-server-workspace-split-requirements.md`) is **not** done; `tools.rs` is binary-only today, so tool-dispatch integration tests are constrained until that split lands (see Risks).
+The crate already has a library target and external `LspClient` integration
+coverage. `tools.rs` remains binary-private, so direct router tests are less
+convenient; that is a test-organization trade-off, not an ARCH-1 prerequisite
+for the completed tool work.
 
 ---
 
@@ -241,7 +259,8 @@ In scope: AGENT-1..8 as read-only data-returning tools, plus the capability expa
 
 ### Deferred to Follow-Up Work
 - Applying edits server-side (rename/code-action application) — intentionally out; tools return data only (KTD2).
-- ARCH-1 lib/bin split — recommended to land first for richer tool-dispatch integration tests, but each tool ships with param-validation + response-shaping tests regardless (see Risks).
+- Exposing the MCP tool router from the library — potentially useful for richer
+  dispatch integration tests, but not required by this completed feature.
 
 Out of scope: non-Rust language support; UI for presenting actions.
 
@@ -249,7 +268,10 @@ Out of scope: non-Rust language support; UI for presenting actions.
 
 ## Risks & Dependencies
 
-- **Testability gated by ARCH-1:** `tools.rs` is binary-only today, so full tool-dispatch integration tests are limited. Mitigation: each unit ships param-validation + response-shaping unit tests against shaped LSP payloads; deeper dispatch tests follow ARCH-1. Flagged, not blocking.
+- **Router visibility:** `tools.rs` is binary-private, so full router integration
+  tests need an explicit exposure decision. The shipped units use focused
+  parameter and response-shaping tests; router exposure is optional follow-up
+  test infrastructure, not a blocked dependency.
 - **Capability advertisement is load-bearing (U1):** if a capability is mis-advertised, the dependent tool silently returns empty. Each tool's integration test (gated) should confirm RA actually offers the feature.
 - **rust-analyzer experimental requests** (`expandMacro`, `serverStatus`) are non-standard LSP; pin behavior against the RA version this repo ships (fenix nightly via the flake).
 - Synergy: U5 readiness unblocks REV-008's cache-poisoning mitigation.
@@ -269,5 +291,8 @@ Out of scope: non-Rust language support; UI for presenting actions.
 ## Sources & Research
 
 - Origin todo: `todos/2026-05-28-expand-lsp-tool-surface.md` (REV-010; consolidates AGENT-1..8).
-- Verified: six tools at `mcp-server/src/tools.rs:309/387/437/496/544/603`; rmcp `#[tool_router]` `tools.rs:286-289`; `ClientCapabilities::default()` + serverStatus override `mcp-server/src/lsp_client.rs:236-240`; `LspClient::request` `:270`; record structs `tools.rs:146-266`; `RuntimeStatus` `bootstrap.rs:150-188`.
-- ARCH-1 dependency context: `docs/brainstorms/2026-05-04-mcp-server-workspace-split-requirements.md` (not yet done).
+- Historical planning evidence: the original six tools, router, default client
+  capabilities, and response records were verified before implementation. Exact
+  source offsets are intentionally omitted because the feature is complete.
+- Audit note: the library target and external `LspClient` integration coverage
+  already exist. Only MCP router exposure remains an optional testability choice.

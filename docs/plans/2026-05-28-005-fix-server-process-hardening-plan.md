@@ -11,13 +11,13 @@ origin: todos/2026-05-28-server-process-hardening.md
 
 ## Summary
 
-The direct-spawn bootstrap path (`start_direct_server()` in `mcp-server/src/bootstrap.rs:496-509`) spawns `lspmux server` with null stdio and immediately drops the child handle — no PID tracking, no pidfile, no `kill_on_drop`. Concurrent invocations can race multiple servers onto one socket, and orphans accumulate. This plan adds pidfile-based single-instance guarding and file logging for the spawned server. **SEC-5 (socket dir 0700) is already fixed** — `setup:47` already runs `chmod 700 "${LSPMUX_SOCKET_DIR}"` — so this plan is scoped to SEC-4 only and records SEC-5 as already satisfied with a regression test.
+The direct-spawn bootstrap path (`start_direct_server()` in `mcp-server/src/bootstrap.rs`) spawns `lspmux server` with null stdio and immediately drops the child handle. Concurrent invocations can race, and failures are hard to diagnose. This plan needs an endpoint-agnostic spawn lease plus file logging. A pidfile alone is not a single-instance guard: check-then-spawn and atomic pidfile replacement still permit two callers to spawn. **SEC-5 (Unix socket directory 0700) is already fixed** — `setup` runs `chmod 700 "${LSPMUX_SOCKET_DIR}"` — so this plan is scoped to SEC-4 and a regression guard.
 
 ---
 
 ## Problem Frame
 
-- **SEC-4 (open):** `start_direct_server()` (`mcp-server/src/bootstrap.rs:496-509`) builds `lspmux server --config <path>`, sets `stdout`/`stderr` to `Stdio::null()`, calls `.spawn()`, and drops the returned child. There is no PID stored, no pidfile checked before spawning, and no `kill_on_drop`. Concurrent bootstraps can spawn duplicate servers contending for one socket; orphaned servers accumulate over time. Spawned-server output is discarded (`/dev/null`), so failures are undiagnosable.
+- **SEC-4 (open):** `start_direct_server()` builds `lspmux server --config <path>`, sets `stdout`/`stderr` to `Stdio::null()`, calls `.spawn()`, and drops the returned child. There is no spawn lease, PID record, or `kill_on_drop`. Concurrent bootstraps can spawn duplicate servers for the same endpoint; spawned-server output is discarded (`/dev/null`), so failures are undiagnosable.
 - **SEC-5 (already resolved):** the review flagged the socket directory at default 0755 (world-accessible socket under `/tmp/lspmux/`). Verification shows `setup` already creates the dirs and runs `chmod 700 "${LSPMUX_SOCKET_DIR}"` (`setup:46-47`). No code change needed; add a regression guard so it can't silently regress.
 
 Socket dir precedence (verified, `setup:13-23`): `XDG_RUNTIME_DIR` → `TMPDIR` → `/tmp`, with the lspmux dir under `RUNTIME_BASE`.
@@ -26,20 +26,27 @@ Socket dir precedence (verified, `setup:13-23`): `XDG_RUNTIME_DIR` → `TMPDIR` 
 
 ## Requirements
 
-- **R1.** Direct-spawn writes and checks a pidfile; no duplicate servers on one socket.
+- **R1.** Direct-spawn uses an endpoint-agnostic, atomic spawn lease; concurrent callers either observe the ready service or wait for the lease holder, rather than spawning independently.
 - **R2.** The spawned server logs to a file, not `/dev/null`.
 - **R3.** Socket directory is created mode 0700. *(Already satisfied at `setup:47`; this plan adds a regression guard, not a new fix.)*
-- **R4.** Regression tests/fixtures cover the pidfile and permission invariants.
+- **R4.** Regression tests/fixtures cover the spawn-lease and permission invariants.
 
 ---
 
 ## Key Technical Decisions
 
-**KTD1 — Pidfile beside the socket, checked before spawn.** Write `<socket_dir>/lspmux-server.pid` after a successful spawn. Before spawning, read the pidfile and check liveness (signal-0 / `kill(pid, 0)` semantics). If a live server owns the socket, do not spawn; reuse it. Stale pidfile (process gone) → overwrite and spawn. This is the minimal correct guard against the duplicate-server race.
+**KTD1 — Atomic spawn lease, with pid as diagnostic data.** Acquire a lock or
+create-new lease file before spawning; other callers poll the configured endpoint
+and wait briefly for the holder to finish. The lease key derives from the resolved
+connection endpoint, not a Unix-socket directory, because TCP is supported too.
+After readiness succeeds, persist a PID only as diagnostic/stale-lease recovery
+information. Define the stale-holder rule and cleanup before implementation.
 
-*Rationale:* The bootstrap already resolves the socket path; co-locating the pidfile keeps lifetime tied to the socket. A pidfile is simpler and more portable across the detach boundary than holding the child handle (the server is intentionally long-lived and outlives the MCP process, so `kill_on_drop` is the wrong default — see KTD2).
+*Rationale:* A pidfile records a process but does not serialize check-and-spawn.
+An atomic lease does. It also works for TCP endpoints, where “beside the socket”
+is meaningless. The detached shared daemon still must not use `kill_on_drop`.
 
-**KTD2 — Do not use `kill_on_drop` for the shared daemon.** The whole point is a long-lived shared server that survives individual MCP-client processes (per the project's launchd-deprecation / on-demand-spawn model). `kill_on_drop` would tear down the shared server when the spawning MCP process exits. The todo lists it "where lifetime allows" — here lifetime does **not** allow it. Pidfile + liveness check is the correct mechanism.
+**KTD2 — Do not use `kill_on_drop` for the shared daemon.** The whole point is a long-lived shared server that survives individual MCP-client processes (per the project's launchd-deprecation / on-demand-spawn model). `kill_on_drop` would tear down the shared server when the spawning MCP process exits. The todo lists it "where lifetime allows" — here lifetime does **not** allow it. The lease plus endpoint liveness check is the correct mechanism; PID data is diagnostic only.
 
 **KTD3 — Log to a file under the log dir.** `setup` already establishes `LSPMUX_LOG_DIR`. Redirect the spawned server's stdout/stderr to `<log_dir>/lspmux-server.log` (append) instead of `Stdio::null()`, so failures are diagnosable (R2).
 
@@ -49,30 +56,35 @@ Socket dir precedence (verified, `setup:13-23`): `XDG_RUNTIME_DIR` → `TMPDIR` 
 
 ## Implementation Units
 
-### U1. Pidfile write + pre-spawn liveness check in `start_direct_server`
+### U1. Endpoint-scoped spawn lease in `start_direct_server`
 
-**Goal:** One server per socket; no duplicate-spawn race; no orphan accumulation.
+**Goal:** One coordinated spawn attempt per configured endpoint; no duplicate-spawn race.
 
 **Requirements:** R1.
 
 **Dependencies:** none.
 
 **Files:**
-- `mcp-server/src/bootstrap.rs` (`start_direct_server` ~496-509; add pidfile path derivation, pre-spawn check, post-spawn write)
+- `mcp-server/src/bootstrap.rs` (derive a stable endpoint key; acquire/release a lease; persist PID only for diagnostics)
 - `mcp-server/src/bootstrap.rs` tests
 
-**Approach:** Derive `<socket_dir>/lspmux-server.pid`. Before spawning: if the pidfile exists and names a live process, skip spawn (reuse). Otherwise spawn, capture the child PID, write it to the pidfile (atomically: write temp + rename). Treat a pidfile naming a dead PID as stale and overwrite. Use the resolved socket dir already known to the bootstrap.
+**Approach:** First probe `service_ready`. On a miss, atomically acquire an
+endpoint-scoped lease in a private runtime directory. The holder spawns, waits
+for readiness, records diagnostic PID data, and releases the lease. A non-holder
+waits and probes again; it may reclaim only a lease proven stale by the specified
+timeout/liveness rule. Make the lease location and permissions work for both Unix
+and TCP endpoints.
 
 **Execution note:** Add a failing test for the duplicate-spawn guard (two bootstraps → one server) before implementing.
 
 **Test scenarios:**
-- Covers R1: with a live pidfile present, `start_direct_server` does not spawn a second process.
-- Covers R1: stale pidfile (dead PID) → spawns and overwrites the pidfile.
-- Edge: missing pidfile → spawns and writes it.
-- Edge: pidfile with garbage contents → treated as stale, not a panic.
-- Concurrency: two near-simultaneous bootstraps result in exactly one server (atomic write/rename + check ordering).
+- Covers R1: two near-simultaneous bootstraps result in exactly one spawn.
+- Covers R1: a waiter observes the lease holder's ready service without spawning.
+- Edge: a holder that exits before readiness is reclaimed only after the stale rule.
+- Edge: malformed diagnostic PID data never grants a second lease.
+- Transport: the same behavior is covered for a Unix endpoint and a TCP endpoint.
 
-**Verification:** Repeated/concurrent bootstraps yield a single server; pidfile reflects the live PID.
+**Verification:** Repeated/concurrent bootstraps yield a single spawn attempt; diagnostic PID data reflects the ready service when available.
 
 ### U2. File logging for the spawned server
 
@@ -118,7 +130,7 @@ Socket dir precedence (verified, `setup:13-23`): `XDG_RUNTIME_DIR` → `TMPDIR` 
 
 ## Scope Boundaries
 
-In scope: SEC-4 pidfile + single-instance guard + file logging; a SEC-5 regression guard.
+In scope: SEC-4 endpoint-scoped spawn lease + file logging; a SEC-5 regression guard.
 
 ### Deferred to Follow-Up Work
 - Broader daemon-lifecycle management (graceful shutdown, idle reaping) beyond duplicate-spawn prevention.
@@ -129,17 +141,17 @@ Out of scope: changing the socket transport or the daemon model; `kill_on_drop` 
 
 ## Risks & Dependencies
 
-- **Pidfile races:** naive check-then-spawn has a TOCTOU window. Mitigated by atomic temp-write + rename and accepting that the liveness check plus single socket binding (the server will fail to bind a busy socket) is the backstop. Note: rust-analyzer/lspmux itself failing to bind a taken socket is the ultimate guard; the pidfile prevents the common case and orphan accumulation.
-- **PID reuse:** a recycled PID could look "live." Low risk for a short-lived check; acceptable given the socket-bind backstop.
+- **Lease recovery:** a crashed lease holder must not block startup forever. Specify a bounded wait and conservative stale-holder recovery; PID data is advisory because PIDs can be reused.
+- **Endpoint variance:** do not rely on Unix socket binding as the backstop. TCP is a supported connection mode and has no socket-directory location for a pidfile.
 - **No dependencies** on other REV todos.
 
 ---
 
 ## Verification
 
-1. `cargo test --manifest-path mcp-server/Cargo.toml` covers pidfile present/stale/missing/garbage and the concurrency guard (U1), file-logging (U2).
+1. `cargo test --manifest-path mcp-server/Cargo.toml` covers lease-holder/waiter/stale recovery and a concurrent single-spawn regression for Unix and TCP endpoint keys, plus file logging (U1/U2).
 2. Socket-dir 0700 regression test passes (U3) and would fail if `setup:47` were removed.
-3. Manual: two rapid MCP bootstraps against a clean socket dir leave exactly one `lspmux server` process and one pidfile.
+3. Manual: two rapid MCP bootstraps against clean Unix and TCP endpoint configurations leave exactly one server process per endpoint.
 4. `cargo clippy --manifest-path mcp-server/Cargo.toml --all-targets -- -W clippy::nursery -W clippy::pedantic` clean; `just shellcheck` passes if any shell changed.
 
 ---
@@ -147,5 +159,5 @@ Out of scope: changing the socket transport or the daemon model; `kill_on_drop` 
 ## Sources & Research
 
 - Origin todo: `todos/2026-05-28-server-process-hardening.md` (REV-011; consolidates SEC-4, SEC-5).
-- Verified: `start_direct_server` `mcp-server/src/bootstrap.rs:496-509` (null stdio, dropped handle, no pidfile); **SEC-5 already fixed** — `chmod 700 "${LSPMUX_SOCKET_DIR}"` at `setup:47`; socket-dir precedence `setup:13-23`; `RuntimeStatus`/runtime assembly `bootstrap.rs:150-188,361-388`.
-- Project context: launchd plist deprecated; daemon spawned on-demand per worktree (memory `project_launchd_service`) — reinforces KTD2 (long-lived daemon, no `kill_on_drop`).
+- Verified: `start_direct_server` in `mcp-server/src/bootstrap.rs` uses null stdio and drops the child handle; it supports Unix and TCP connection addresses. **SEC-5 is already fixed** by `chmod 700 "${LSPMUX_SOCKET_DIR}"` in `setup`.
+- Project context: launchd plist is deprecated; the daemon is spawned on demand for its configured endpoint and multiplexes worktrees — reinforcing KTD2 (long-lived daemon, no `kill_on_drop`).

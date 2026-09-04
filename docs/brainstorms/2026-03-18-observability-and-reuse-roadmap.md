@@ -1,161 +1,62 @@
-# lspmux-cc: observability and artifact-reuse roadmap
+# Observability and artifact-reuse roadmap
 
 **Date:** 2026-03-18
-**Status:** Live roadmap. Phase 1 (observability) shipped via REV-004; Phase 2 (compiler accounting, REV-005) and Phase 3 (validation) remain open.
-**Context:** Follow-up to `docs/brainstorms/archive/2026-02-05-lspmux-claude-code-brainstorm.md`
+**Status:** Phase 1 is complete. Phase 2 is partially implemented and tracked
+by the [REV-005 plan](../plans/2026-05-28-002-feat-compiler-action-reuse-accounting-plan.md).
 
-## What changed in my understanding during review
+## Purpose
 
-The original brainstorm correctly framed the primary problem as “too many `rust-analyzer` instances per worktree.” After reviewing the repository, the next-order problem is clearer:
+One shared rust-analyzer per worktree is necessary, but it does not by itself
+show that clients avoided duplicate compiler work. The runtime should make the
+service, client, readiness, and compiler-accounting boundaries visible without
+requiring log archaeology.
 
-1. we still need the **single shared rust-analyzer per worktree** invariant
-2. we also need to **observe** whether that invariant is actually reducing duplicate compiler work
-3. we need enough attribution to say **which client** caused traffic and whether that client is succeeding or failing
+| Phase | State | Deliverable |
+|---|---|---|
+| 1. Runtime observability | Complete | Client identity, bootstrap/tool telemetry, server status, workspace registry, and `experimental/serverStatus` readiness ingestion |
+| 2. Compiler accounting | Partial | `rust_server_status` parses the most recent local `target/flycheck*/stdout` cargo-JSON file; REV-005 defines the remaining attributable accounting work |
+| 3. Validation | Pending Phase 2 | Prove the one-service invariant and accounting semantics with hermetic tests; add local inspection only when it answers an operational question |
 
-In other words, a single PID is necessary, but it is not yet sufficient evidence that the system is doing the right thing.
+## Runtime contract
 
-## What this repository should know at runtime
+For a worktree, `rust_server_status` and `rust_workspace_registry` should make
+these questions answerable:
 
-For each worktree, the system should be able to answer all of the following without log archaeology:
+- Is the lspmux daemon reachable, and has it created the requested workspace
+  instance?
+- Is the MCP client's rust-analyzer transport alive and is rust-analyzer
+  quiescent, warning, or unhealthy?
+- Which stable client identity started this MCP process?
+- What bootstrap and tool outcomes has this MCP process recorded?
+- What cargo-JSON artifact data was found locally, and what are its limits?
 
-- Is there exactly one `rust-analyzer` behind lspmux for this worktree?
-- Was the shared service reused, started via launchd/systemd, or started directly?
-- Is rust-analyzer healthy, partially degraded, or still indexing?
-- Which clients are sending traffic? (`claude_lsp`, `claude_mcp`, `codex_mcp`, `nvim_lsp`, `generic_mcp`, etc.)
-- What is the per-client success/failure rate?
-- What are the common failure classes? (bootstrap, transport, indexing/not-ready, invalid input, rust-analyzer internal error)
-- How often did a request force compiler activity?
-- Of those compiler activities, how many reused fresh artifacts versus rebuilt work?
+The last item is deliberately narrower than a claim about cache efficiency.
+The current scan is a snapshot of a local flycheck output file, not a causal
+record of a client request and not a measurement of direct-editor Cargo work.
 
-## Readiness model: stop guessing, start reporting
+## Phase 2 boundary
 
-Right now the user-facing guidance is effectively “wait 2-3 seconds and retry.” That is a placeholder, not a readiness model.
+REV-005 owns the next decision and implementation work. Its minimum useful
+outcome is an accounting stream for rust-analyzer-induced Cargo activity that
+can distinguish `fresh` from rebuilt artifacts and identify the workspace and
+client context. A wrapper or captured Cargo JSON may be suitable; external
+process observation is only a validation aid because attribution is weak.
 
-rust-analyzer already exposes better primitives:
+`sccache` remains a cooperating cache layer. Configuring it, sharing target
+directories across worktrees, and CI cache warming are not lspmux-cc product
+work. In particular, a shared target directory is not a default: Cargo locking
+can erase the concurrency benefit the project is intended to preserve.
 
-- `experimental/serverStatus`
-  - `health = ok | warning | error`
-  - `quiescent = true | false`
-  - optional human-readable `message`
-- `rust-analyzer/analyzerStatus`
-  - useful for deep debugging and dependency/context inspection
+## Validation after accounting exists
 
-The MCP server should ingest and retain that state, then expose it through `rust_server_status` and telemetry.
+- Exercise two clients against one worktree and verify one rust-analyzer
+  instance through the registry/integration harness.
+- Feed known Cargo JSON through the accounting path and verify the status
+  schema and fresh/rebuilt totals.
+- Verify that the recorded workspace and client context are not inferred from
+  unrelated process activity.
 
-## Client attribution model
+## References
 
-Attribution should be explicit, not inferred after the fact.
-
-### Proposed env contract
-
-Each wrapper or host entry point should inject stable labels such as:
-
-- `LSPMUX_CLIENT_KIND=claude_lsp|claude_mcp|codex_mcp|nvim_lsp|generic_mcp`
-- `LSPMUX_CLIENT_HOST=claude|codex|nvim|generic`
-- `LSPMUX_SESSION_ID=<uuid-or-host-session-id>`
-- `WORKSPACE_ROOT=<absolute worktree root>`
-
-This is preferable to trying to reverse-engineer client type from process trees or argv later.
-
-## Suggested telemetry surface
-
-### Counters
-
-- `lspmux_cc_tool_requests_total{tool,client_kind,outcome}`
-- `lspmux_cc_bootstrap_total{service_mode}`
-- `lspmux_cc_bootstrap_failures_total{stage}`
-- `lspmux_cc_ra_status_transitions_total{health}`
-- `lspmux_cc_compiler_actions_total{workspace,client_kind}`
-- `lspmux_cc_artifact_reuse_total{workspace,client_kind,result=fresh|rebuilt}`
-
-### Histograms
-
-- `lspmux_cc_tool_latency_seconds{tool,client_kind}`
-- `lspmux_cc_bootstrap_latency_seconds{service_mode}`
-- `lspmux_cc_ra_quiescence_wait_seconds{workspace}`
-
-### Structured logs
-
-Emit one structured event for:
-
-- bootstrap attempt/result
-- MCP tool start/result
-- LSP transport failure
-- rust-analyzer readiness transition
-- compiler-action observation
-
-## Where artifact-reuse data can come from
-
-There are three practical sources, in order of increasing control:
-
-### 1. rust-analyzer / flycheck output
-
-Cargo JSON already contains high-value signals like `compiler-artifact` and `fresh: true`. This is the quickest proof-of-concept path if that output can be captured reliably.
-
-### 2. wrapper/proxy around cargo or rustc
-
-A lightweight wrapper placed in the toolchain path for rust-analyzer-owned work can emit structured accounting events and then delegate to the real binary. This is probably the strongest medium-term design because it improves both attribution and data quality.
-
-### 3. external process observation
-
-Useful as a validation backstop, but weak as the main source of truth because attribution and cache classification are difficult.
-
-## Crates worth adopting
-
-These look like good fits for the next phase:
-
-- `metrics` (+ exporter): labeled counters/histograms
-- `metrics-tracing-context`: attach tracing context as metric labels where appropriate
-- `directories`: cross-platform config/data/runtime path resolution
-- `libc` or `nix`: correct UID lookup and Unix file-type helpers
-
-A larger question is whether to replace the hand-rolled LSP client transport with an existing library such as `async-lsp` or `tower-lsp`-adjacent infrastructure. My current view is:
-
-- **not urgent right now**
-- worth a spike once observability is in place
-- only justified if it makes advanced tooling and notification handling meaningfully simpler
-
-## What “good” looks like for the long-term goal
-
-Given the user’s target scenario:
-
-- file open in two editors
-- `cargo test` from one editor
-- `cargo clippy` against the containing package
-- `sccache` work happening in parallel elsewhere
-
-Success should look like this:
-
-1. one shared `rust-analyzer` instance per worktree
-2. a visible, queryable record of which clients touched that worktree
-3. a readiness signal showing whether RA was still converging when requests were made
-4. a measurable compiler-action ledger showing fresh/reused versus rebuilt work
-5. a clear story about where this repository stops and `sccache` / broader cargo coordination begins
-
-## Near-term roadmap
-
-### Phase 1: observability foundation (mostly shipped, REV-004)
-
-- [x] add explicit client identity propagation
-- [x] add structured logs and metrics
-- [ ] ingest rust-analyzer readiness notifications (tracked in `todos/2026-05-28-expand-lsp-tool-surface.md`, AGENT-4)
-- [x] extend `rust_server_status`
-
-### Phase 2: compiler-action accounting
-
-- capture cargo JSON or proxy cargo/rustc for rust-analyzer-owned work
-- emit reuse vs rebuild counters
-- correlate with client kind and workspace
-
-### Phase 3: validation and tuning
-
-- add integration tests for telemetry schemas
-- validate one-RA-per-worktree invariant across multiple clients
-- build small dashboards or debug commands for local inspection
-
-## Related todos
-
-- `todos/2026-03-18-compiler-action-and-artifact-reuse-accounting.md` (REV-005, open)
-- `todos/archive/2026-03-18-observability-and-client-attribution.md` (REV-004, done)
-- `todos/archive/2026-03-18-linux-hook-bootstrap-parity.md` (REV-006, done)
-- `todos/archive/2026-03-18-crate-replacement-opportunities.md` (REV-007, done)
+- [REV-005 plan](../plans/2026-05-28-002-feat-compiler-action-reuse-accounting-plan.md)
+- [local-cache disposition](archive/2026-03-18-local-dev-cache-optimization.md)

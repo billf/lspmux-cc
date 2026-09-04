@@ -11,7 +11,7 @@ origin: todos/2026-03-18-mcp-request-deduplication-and-caching.md
 
 ## Summary
 
-Two rapid `rust_diagnostics` calls on the same unchanged file fire two independent LSP requests to the shared rust-analyzer. There's no response cache and no in-flight coalescing at the MCP tool layer (distinct from `ensure_file_open()`'s content-hash dedup, which only suppresses redundant `didChange` notifications). This plan adds a `moka`-backed `ToolCache` wrapping tool dispatch: identical concurrent calls coalesce into one LSP request via `try_get_with`, recent results return from a short TTL cache, and the cache is invalidated whenever a `didChange` is sent. `rust_server_status` bypasses the cache (must be live).
+Two rapid `rust_diagnostics` calls on the same unchanged file fire two independent LSP requests to the shared rust-analyzer. There's no response cache and no in-flight coalescing at the MCP tool layer (distinct from `ensure_file_open()`'s content-hash dedup, which only suppresses redundant `didChange` notifications). This plan adds a `moka`-backed `ToolCache` wrapping tool dispatch: identical concurrent calls coalesce into one LSP request via `try_get_with`, and recent results return from a short TTL cache. File sync runs before cache lookup, and a monotonic workspace sync generation is part of the key, so a hit cannot bypass change detection. `rust_server_status` bypasses the cache because it must be live.
 
 ---
 
@@ -30,7 +30,7 @@ Two rapid `rust_diagnostics` calls on the same unchanged file fire two independe
 
 - **R1.** Duplicate MCP tool calls within a configurable TTL window return cached results.
 - **R2.** Concurrent identical tool calls coalesce into a single LSP request.
-- **R3.** The cache is invalidated when `ensure_file_open()` sends a `didChange`.
+- **R3.** Cached results never survive a content change: `ensure_file_open()` runs before lookup, and the sync generation it bumps on `didOpen`/`didChange` is part of the cache key.
 - **R4.** `rust_server_status` always returns live data (bypasses cache).
 - **R5.** No cache poisoning from empty rust-analyzer responses during indexing.
 - **R6.** Cache hit/miss counters are visible in telemetry (after REV-004, which has landed).
@@ -42,15 +42,15 @@ Two rapid `rust_diagnostics` calls on the same unchanged file fire two independe
 
 **KTD1 — `moka::future::Cache` with `try_get_with` (Option 1).** One crate, one primitive covers both in-flight coalescing and TTL caching. Add `moka = { version = "0.12", features = ["future"] }` to `mcp-server/Cargo.toml`. Rejected: manual `DashMap` + `broadcast` (≈100 lines, must hand-roll TTL/eviction); TTL-only cache (misses the concurrent case).
 
-**KTD2 — Cache key `(tool_name: String, params_hash: u64)`.** `serde_json::Value` isn't `Hash`; serialize args to canonical JSON string, then hash to `u64`. Tool name namespaces the key.
+**KTD2 — Cache key `(tool_name, canonical_params, sync_generation)`.** Use a canonical parameter representation rather than a lossy hash: collisions must be impossible, not merely improbable. `sync_generation` is read after pre-sync, so a content change is reflected before lookup.
 
-**KTD3 — Workspace-wide invalidation via `invalidate_all()` on any `didChange`.** rust-analyzer's dependency graph is workspace-wide (editing `lib.rs` can change diagnostics anywhere), so per-file invalidation is unsafe. `invalidate_all()` is O(1) (timestamp-based, lazy cleanup).
+**KTD3 — Workspace-wide freshness via a generation-stamped key.** `LspClient` holds a monotonic `AtomicU64` bumped whenever `ensure_file_open()` sends `didOpen` or `didChange`. The current value is stamped into every cache key. A change therefore gives every later request a distinct key; it cannot coalesce onto a pre-edit in-flight result. This avoids the `invalidate_all()` race in which an old in-flight initializer inserts after invalidation. Stale entries become unreachable and are reaped by TTL plus bounded capacity.
 
 **KTD4 — `rust_server_status` bypasses the cache.** It must reflect live daemon/workspace state. The cache wrapper checks the tool name and skips caching for it.
 
-**KTD5 — Module placement: `mcp-server/src/cache.rs` in the library crate.** `tools.rs` is currently binary-only (ARCH-1 lib split not done), but `cache.rs` is self-contained and belongs in `lib.rs` (`pub mod cache;`) so it's unit-testable without the binary. The integration point (`call_tool`) stays in `tools.rs` in the binary and imports `lspmux_cc_mcp::cache::ToolCache`.
+**KTD5 — Keep cache mechanics independent of tool dispatch.** Put the cache in `mcp-server/src/cache.rs` and export it from `lib.rs`, so its concurrency and freshness behavior can be unit-tested without the MCP router. Integrate it at `call_tool`.
 
-**KTD6 — Cache-poisoning mitigation.** Skip caching responses that look empty while rust-analyzer is non-quiescent. Reuse the `experimental/serverStatus` signal already wired into `ClientCapabilities` (`mcp-server/src/lsp_client.rs:236-240`); REV-010/AGENT-4 formalizes quiescence, but a minimal "empty result + indexing → don't cache" guard ships here.
+**KTD6 — Cache-poisoning mitigation.** Skip caching responses that look empty while rust-analyzer is non-quiescent. The shipped readiness signal exposes this state; retain the conservative guard unless an end-to-end fixture proves that a particular empty response is final.
 
 **KTD7 — `CallToolResult` clone-ability.** `try_get_with` requires the cached value be `Clone`. If rmcp's `CallToolResult` isn't `Clone`, wrap in `Arc` for the cache value and clone the `Arc`.
 
@@ -72,7 +72,7 @@ Two rapid `rust_diagnostics` calls on the same unchanged file fire two independe
 - `mcp-server/src/lib.rs` (`pub mod cache;`)
 - `mcp-server/src/cache.rs` unit tests
 
-**Approach:** `ToolCache` holds a `moka::future::Cache<(String, u64), Arc<CachedValue>>`. Expose `get_or_run(tool_name, params_json, init_future)` that builds the key (KTD2) and calls `try_get_with`. TTL from `LSPMUX_CACHE_TTL_SECS` (default 5s). Optional `weigher` bounding by estimated byte size, not just entry count (LSP responses can be large). Expose `invalidate_all()`.
+**Approach:** `ToolCache` holds a `moka::future::Cache<CacheKey, Arc<CachedValue>>`, where `CacheKey` contains the tool name, canonical parameters, and sync generation. Expose `get_or_run(key, init_future)` backed by `try_get_with`. Configure a short TTL and bounded capacity; do not expose `invalidate_all()`.
 
 **Patterns to follow:** moka `try_get_with` docs (https://docs.rs/moka). Existing config-via-env style in `mcp-server/src/telemetry.rs` (`from_env`).
 
@@ -88,47 +88,47 @@ Two rapid `rust_diagnostics` calls on the same unchanged file fire two independe
 
 ### U2. Integrate `ToolCache` into `call_tool`
 
-**Goal:** Route tool dispatch through the cache, bypassing `rust_server_status`.
+**Goal:** Route eligible read-only file tools through the cache, syncing files before lookup and bypassing live or mutable requests.
 
-**Requirements:** R1, R2, R4.
+**Requirements:** R1, R2, R3, R4.
 
-**Dependencies:** U1.
+**Dependencies:** U1, U3.
 
 **Files:**
 - `mcp-server/src/tools.rs` (`RustAnalyzerTools` holds a `ToolCache`; `call_tool` ~715 wraps `tool_router.call`)
 - `mcp-server/src/main.rs` (construct `ToolCache` and pass into `RustAnalyzerTools::new`)
 
-**Approach:** In `call_tool`, if the tool is `rust_server_status`, dispatch directly (KTD4). Otherwise build the key from the tool name + serialized params and call `cache.get_or_run(..., async { tool_router.call(ctx).await })`. Wrap the result in `Arc` if needed (KTD7).
+**Approach:** Maintain an explicit allowlist of cacheable read-only query tools; do not infer eligibility from `file_path`. Before lookup, validate and synchronize a file-bearing request. Then read `sync_generation`, build the key, and call `cache.get_or_run`. Keep handler-level synchronization as a harmless hash-match no-op so handlers remain independently correct. Bypass status, the workspace registry, and operations that can observe changing global state. If pre-sync fails, dispatch directly to preserve the handler's canonical error.
 
 **Test scenarios:**
 - Covers R4: `rust_server_status` is never served from cache (two calls produce two live dispatches).
 - Covers R1/R2: repeated/concurrent `rust_diagnostics` on one unchanged file dispatch once.
+- Covers R3: changing a file between identical diagnostics calls bumps the generation, so the second call misses and returns fresh data.
 - Integration: a cached tool returns identical payload on the cache hit.
 
-**Verification:** Cached tools dispatch once within TTL; status bypasses.
+**Verification:** An unchanged request dispatches once within TTL; an on-disk change forces a fresh dispatch; live tools bypass.
 
-### U3. Invalidate cache on `didChange`
+### U3. Workspace sync generation
 
 **Goal:** Stale results never survive a document change.
 
 **Requirements:** R3.
 
-**Dependencies:** U1, U2.
+**Dependencies:** none.
 
 **Files:**
-- `mcp-server/src/lsp_client.rs` (`ensure_file_open` ~414-470: invoke an invalidation callback after a `didChange` is actually sent)
-- wiring so `LspClient` can reach the `ToolCache` (callback/handle injected at construction)
+- `mcp-server/src/lsp_client.rs` (add an `AtomicU64`, bump it when `ensure_file_open()` sends `didOpen` or `didChange`, and expose a reader)
 
-**Approach:** When `ensure_file_open` sends a `didChange` (i.e., content hash changed), trigger `cache.invalidate_all()` (KTD3). Inject the cache handle/callback into `LspClient` at construction to avoid a layering cycle (a small `Arc<dyn Fn()>` or an `Arc<ToolCache>` reference).
+**Approach:** Increment the generation only after a document-sync notification is sent, never on a hash-match early return. U2 reads it after pre-sync and stamps it into the key. This keeps `LspClient` independent of the tool-layer cache.
 
-**Execution note:** Add the failing invalidation test (change file → prior cached diagnostics not returned) before wiring the callback.
+**Execution note:** Add the failing staleness test (change file → prior cached diagnostics not returned) before wiring the generation bump.
 
 **Test scenarios:**
-- Covers R3: cache a `rust_diagnostics` result, send a `didChange` for that file, assert the next call re-dispatches (cache miss).
-- Edge: `ensure_file_open` on an *unchanged* file (hash match → no `didChange`) does NOT invalidate.
-- Integration: change in file A invalidates cached diagnostics keyed on file B (workspace-wide invalidation, KTD3).
+- Covers R3: cache diagnostics, change the file, then assert the next call re-dispatches because the generation changed.
+- Edge: an unchanged file does not bump the generation, so its cached result remains eligible.
+- Integration: editing file A changes the generation, so a later query for file B re-dispatches.
 
-**Verification:** `didChange` clears the cache; no-op opens don't.
+**Verification:** Sent `didOpen`/`didChange` notifications bump the generation; hash-match opens do not.
 
 ### U4. Cache hit/miss telemetry counters
 
@@ -172,11 +172,11 @@ Two rapid `rust_diagnostics` calls on the same unchanged file fire two independe
 
 ## Scope Boundaries
 
-In scope: response cache + in-flight coalescing at the MCP tool layer, `didChange` invalidation, status bypass, poisoning guard, hit/miss counters, tests, TTL doc.
+In scope: response cache + in-flight coalescing for an explicit query-tool allowlist, pre-lookup file sync, generation-based workspace freshness, live-tool bypasses, poisoning guard, hit/miss counters, tests, and configuration documentation.
 
 ### Deferred to Follow-Up Work
-- Full quiescence detection from `experimental/serverStatus` / `$/progress` (REV-010 / AGENT-4). This plan ships only a minimal empty-during-indexing guard.
-- Per-file or dependency-aware invalidation (intentionally rejected for now in favor of `invalidate_all()`).
+- Additional readiness signals such as `$/progress`; the shipped server-status readiness is sufficient for this conservative guard.
+- Per-file or dependency-aware freshness (intentionally rejected for now in favor of one workspace-global sync generation).
 
 Out of scope: caching at the `LspClient::request` layer (kept at the tool layer for clear keys and invalidation).
 
@@ -184,20 +184,20 @@ Out of scope: caching at the `LspClient::request` layer (kept at the tool layer 
 
 ## Risks & Dependencies
 
-- **Cache poisoning during indexing** (R5): empty diagnostics cached before RA is ready. Mitigated by KTD6; fuller fix depends on REV-010/AGENT-4 quiescence.
+- **Cache poisoning during indexing** (R5): empty diagnostics may be cached before RA is ready. Mitigate with the shipped readiness signal; retain short TTLs and an end-to-end fixture.
 - **`CallToolResult` clonability** (KTD7): may need `Arc` wrapping; resolve when integrating U2.
-- **Layering**: `LspClient` invalidating the tool-layer cache (U3) needs a callback to avoid a dependency cycle.
-- New dependency `moka` (~50KB compile overhead) — acceptable, battle-tested.
-- REV-004 (done) provides the telemetry substrate for U4.
+- **Eligibility**: caching every tool by default risks serving stale global state. The U2 allowlist starts small and expands only with a freshness argument and test.
+- New dependency `moka` adds compile and runtime complexity; admit it only if a benchmark shows meaningful repeated-call savings.
+- Existing telemetry provides the baseline for U4; cache counters remain new work.
 
 ---
 
 ## Verification
 
-1. `cargo test --manifest-path mcp-server/Cargo.toml` covers coalescing (single init under concurrency), TTL hit, error-not-cached, empty-skip, and `didChange` invalidation.
-2. `cargo build --manifest-path mcp-server/Cargo.toml` succeeds with `moka` added.
-3. `rust_server_status` still returns live data (never cached) and now carries hit/miss counters.
-4. `cargo clippy --manifest-path mcp-server/Cargo.toml --all-targets -- -W clippy::nursery -W clippy::pedantic` clean.
+1. `cargo test --manifest-path mcp-server/Cargo.toml` covers coalescing, TTL hit, error-not-cached, empty-while-indexing skip, generation freshness, and an on-disk-change-between-calls regression.
+2. A focused benchmark demonstrates a material repeated-call saving before the dependency is retained.
+3. `rust_server_status` remains live and exposes hit/miss counters.
+4. `cargo clippy --manifest-path mcp-server/Cargo.toml --all-targets -- -W clippy::nursery -W clippy::pedantic` stays clean.
 
 ---
 
@@ -205,5 +205,5 @@ Out of scope: caching at the `LspClient::request` layer (kept at the tool layer 
 
 - Origin todo: `todos/2026-03-18-mcp-request-deduplication-and-caching.md` (REV-008).
 - moka docs: https://docs.rs/moka/latest/moka/future/struct.Cache.html ; CacheBuilder: https://docs.rs/moka/latest/moka/future/struct.CacheBuilder.html
-- Verified locations: `call_tool` `mcp-server/src/tools.rs:715` (dispatch via `tool_router.call` ~731); `request()` `mcp-server/src/lsp_client.rs:270-314`; `ensure_file_open` `mcp-server/src/lsp_client.rs:414-470`; `ClientCapabilities` with serverStatus override `mcp-server/src/lsp_client.rs:236-240`; `moka`/`dashmap` absent from `mcp-server/Cargo.toml`.
-- Related (done): REV-004 observability/attribution. Related: REV-010 (AGENT-4 quiescence) for the fuller poisoning fix.
+- Verified at audit: `call_tool` is in `mcp-server/src/tools.rs`; `ensure_file_open` is in `mcp-server/src/lsp_client.rs`; `moka` and `dashmap` are absent from `mcp-server/Cargo.toml`. The exact offsets are deliberately omitted because the tool surface evolves quickly.
+- Related: existing telemetry and the shipped readiness signal.
