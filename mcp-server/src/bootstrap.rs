@@ -515,11 +515,14 @@ impl RuntimeConfig {
     }
 
     fn start_direct_server(&self) -> Result<()> {
+        // `lspmux server` (0.3.0+) takes no `--config` flag; it always reads
+        // its own platform-default config path. Passing `--config` here makes
+        // the spawn fail immediately on a clap parse error, so the daemon
+        // never comes up and `wait_for_socket` times out regardless of the
+        // configured transport.
         let mut command = Command::new(&self.lspmux_path);
         command
             .arg("server")
-            .arg("--config")
-            .arg(&self.config_path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
 
