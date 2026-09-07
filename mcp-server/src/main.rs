@@ -79,12 +79,14 @@ impl ServerHandler for LspmuxMcpServer {
         }
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> std::result::Result<rmcp::model::ListToolsResult, McpError> {
-        Ok(self.tools.list_tools())
+    ) -> impl std::future::Future<Output = std::result::Result<rmcp::model::ListToolsResult, McpError>>
+           + Send
+           + '_ {
+        std::future::ready(Ok(self.tools.list_tools()))
     }
 
     async fn call_tool(

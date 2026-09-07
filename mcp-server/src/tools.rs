@@ -1967,7 +1967,7 @@ mod tests {
         // The node at depth == MAX_SYMBOL_DEPTH is shaped but has its children
         // dropped, so the retained chain spans depths 0..=MAX_SYMBOL_DEPTH.
         assert_eq!(levels, MAX_SYMBOL_DEPTH + 1);
-        assert!(node.children.is_empty());
+        assert_eq!(node.children, Vec::<DocumentSymbolRecord>::new());
     }
 
     #[test]
@@ -1988,7 +1988,7 @@ mod tests {
         };
         let rec = symbol_information_record(info);
         assert_eq!(rec.kind, "struct");
-        assert!(rec.children.is_empty());
+        assert_eq!(rec.children, Vec::<DocumentSymbolRecord>::new());
         assert_eq!(rec.range.start.line, 4);
     }
 
