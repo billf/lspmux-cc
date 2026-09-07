@@ -6,7 +6,10 @@ description = "MCP server for lspmux rust-analyzer integration"
 license = "MIT"
 
 [dependencies]
-rmcp = { version = "1.4", features = ["server", "transport-io", "macros"] }
+# rmcp 1.4's semver range admits newer macros releases, but they generate calls
+# introduced after the 1.4 runtime. Keep the runtime and proc macro aligned.
+rmcp = { version = "=1.4.0", features = ["server", "transport-io", "macros"] }
+rmcp-macros = "=1.4.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

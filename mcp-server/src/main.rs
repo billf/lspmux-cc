@@ -15,7 +15,7 @@ use lspmux_cc_mcp::bootstrap::{RuntimeConfig, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::LspClient;
 use lspmux_cc_mcp::telemetry::TelemetryState;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo, ToolsCapability,
+    CallToolRequestParams, CallToolResult, Implementation, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, ServiceExt};
 use rmcp::transport::io::stdio;
@@ -31,13 +31,12 @@ struct LspmuxMcpServer {
 
 impl ServerHandler for LspmuxMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            server_info: rmcp::model::Implementation {
-                name: env!("CARGO_PKG_NAME").into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            instructions: Some(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
                 "Provides Rust development intelligence over MCP by talking to a shared \
                  rust-analyzer instance through lspmux.\n\
                  \n\
@@ -69,14 +68,7 @@ impl ServerHandler for LspmuxMcpServer {
                  All file paths must be absolute. Tools are read-only and workspace-scoped.\n\
                  Use rust_server_status to confirm the correct workspace root and shared-service \
                  bootstrap state."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability { list_changed: None }),
-                ..ServerCapabilities::default()
-            },
-            ..ServerInfo::default()
-        }
+            )
     }
 
     fn list_tools(

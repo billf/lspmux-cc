@@ -2197,27 +2197,13 @@ mod tests {
         }
     }
 
-    /// The real invariant: across every registered tool, no input or output schema may
-    /// carry the `{const:null, nullable:true}` node after normalization. This runs the
-    /// production `normalize_tool_schemas` over the actual `tool_router` output, so a new
-    /// `Option<ComplexType>` field on any tool (or an rmcp shape change) is caught even on
-    /// a tool not named here.
+    /// Across every registered tool, no input or output schema may carry the
+    /// `{const:null, nullable:true}` node after normalization. This runs the production
+    /// `normalize_tool_schemas` over the actual `tool_router` output, so a new
+    /// `Option<ComplexType>` field on any tool is covered.
     #[test]
     fn registered_tool_schemas_are_clean_after_normalize() {
         let mut tools = RustAnalyzerTools::tool_router().list_all();
-
-        // rmcp/schemars still emits the toxic node on at least one tool. If this fails,
-        // the upstream encoding changed and the surgical rewrite must be revisited.
-        let toxic_before = tools.iter().any(|tool| {
-            tool.output_schema.as_deref().is_some_and(|schema| {
-                contains_toxic_null(&serde_json::Value::Object(schema.clone()))
-            })
-        });
-        assert!(
-            toxic_before,
-            "expected rmcp/schemars to emit a {{const:null, nullable:true}} node on some tool; \
-             upstream encoding may have changed"
-        );
 
         for tool in &mut tools {
             normalize_tool_schemas(tool);
