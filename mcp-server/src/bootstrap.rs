@@ -981,12 +981,11 @@ connect = ["127.0.0.1", 27631]
     }
 
     #[tokio::test]
-    async fn tcp_is_ready_returns_false_for_closed_port() {
-        // Bind then immediately drop to get a port that's definitely not listening.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        assert!(!tcp_is_ready("127.0.0.1", port).await);
+    async fn tcp_is_ready_returns_false_for_unconnectable_port() {
+        // Port zero is reserved and cannot be a listening TCP endpoint. Unlike a
+        // bind-then-drop ephemeral port, it cannot be claimed by another process
+        // between setup and the probe.
+        assert!(!tcp_is_ready("127.0.0.1", 0).await);
     }
 
     #[tokio::test]
