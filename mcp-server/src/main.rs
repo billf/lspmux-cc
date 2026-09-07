@@ -15,7 +15,7 @@ use lspmux_cc_mcp::bootstrap::{RuntimeConfig, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::LspClient;
 use lspmux_cc_mcp::telemetry::TelemetryState;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, Implementation, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, ServiceExt};
 use rmcp::transport::io::stdio;
@@ -85,7 +85,7 @@ impl ServerHandler for LspmuxMcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> std::result::Result<CallToolResult, McpError> {
+    ) -> std::result::Result<CallToolResponse, McpError> {
         self.tools.call_tool(request, context).await
     }
 }
