@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 # rmcp 1.4's semver range admits newer macros releases, but they generate calls
 # introduced after the 1.4 runtime. Keep the runtime and proc macro aligned.
-rmcp = { version = "=1.4.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "=3.2.0", features = ["server", "transport-io", "macros"] }
 rmcp-macros = "=1.4.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
