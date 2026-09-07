@@ -36,7 +36,9 @@ fi
 # already canonical.
 WS_CANON=""
 if [ "${WS}" != "(not set)" ] && [ -d "${WS}" ]; then
-    WS_CANON="$(cd "${WS}" 2>/dev/null && pwd -P || true)"
+    if ! WS_CANON="$(cd "${WS}" 2>/dev/null && pwd -P)"; then
+        WS_CANON=""
+    fi
 fi
 
 # Probe the daemon. `lspmux status` exits non-zero when the daemon is down;

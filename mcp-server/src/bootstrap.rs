@@ -554,6 +554,7 @@ fn cargo_home_path(home: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn nix_like_uid() -> u32 {
     #[cfg(unix)]
     {
@@ -815,7 +816,7 @@ mod tests {
         assert!(!socket_is_ready(missing.to_str().unwrap()));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn nix_like_uid_matches_os_uid() {
         assert_eq!(nix_like_uid(), unsafe { libc::getuid() });
@@ -884,7 +885,9 @@ mod tests {
                 "/home/test/Library/Application Support/lspmux/config.toml"
             );
         } else {
-            assert_eq!(path, "/home/test/.config/lspmux/config.toml");
+            let config_root =
+                std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| "/home/test/.config".into());
+            assert_eq!(path, format!("{config_root}/lspmux/config.toml"));
         }
     }
 
