@@ -23,7 +23,7 @@ which = "8.0.2"
 directories = "6"
 metrics = "0.24"
 libc = "0.2"
-toml = "0.8"
+toml = "1.1"
 
 [dev-dependencies]
 tempfile = "3"
