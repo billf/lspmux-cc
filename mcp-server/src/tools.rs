@@ -25,7 +25,7 @@ use std::time::Instant;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorCode, ListToolsResult};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, ErrorCode, ListToolsResult};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, ErrorData as McpError, Json, RoleServer};
 use schemars::JsonSchema;
@@ -1555,7 +1555,7 @@ impl RustAnalyzerTools {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         let tool_name = request.name.clone();
         let client = self.telemetry.client_identity();
         let started = Instant::now();
@@ -1654,7 +1654,6 @@ const fn error_code_name(code: ErrorCode) -> &'static str {
         ErrorCode::INVALID_PARAMS => "invalid_params",
         ErrorCode::INTERNAL_ERROR => "internal_error",
         ErrorCode::RESOURCE_NOT_FOUND => "resource_not_found",
-        ErrorCode::URL_ELICITATION_REQUIRED => "url_elicitation_required",
         _ => "other",
     }
 }
