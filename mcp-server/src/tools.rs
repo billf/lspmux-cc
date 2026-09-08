@@ -646,9 +646,25 @@ impl RustAnalyzerTools {
         }
     }
 
+    // Annotation invariant: every tool in this impl is read-only and
+    // workspace-scoped, so each `annotations(...)` block sets
+    // `read_only_hint = true` and `open_world_hint = false`. Read-only means no
+    // user-observable mutation: the tools never write the user's files
+    // (`rust_rename` and `rust_code_actions` return a workspace edit as data for
+    // the caller to apply). The `didOpen`/`didChange` that `ensure_file_open`
+    // sends is a read-side sync mirroring current on-disk content into
+    // rust-analyzer; it carries no edit of ours and is safe to repeat. The
+    // `tool_annotations_*` test pins these values so a future tool cannot
+    // silently drop or flip them.
+
     /// Get diagnostics (errors and warnings) for a Rust file.
     #[tool(
         name = "rust_diagnostics",
+        annotations(
+            title = "Rust Diagnostics",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Get Rust compiler errors and warnings for a file. Returns structured diagnostics with one-based locations."
     )]
     async fn diagnostics(
@@ -727,6 +743,7 @@ impl RustAnalyzerTools {
     /// Get type information and documentation at a position.
     #[tool(
         name = "rust_hover",
+        annotations(title = "Rust Hover", read_only_hint = true, open_world_hint = false),
         description = "Get type signature and documentation for a symbol at a specific position in a Rust file."
     )]
     async fn hover(
@@ -777,6 +794,11 @@ impl RustAnalyzerTools {
     /// Find the definition of a symbol.
     #[tool(
         name = "rust_goto_definition",
+        annotations(
+            title = "Rust Go to Definition",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Find where a symbol is defined. Returns one-based file locations for the definition."
     )]
     async fn goto_definition(
@@ -823,6 +845,11 @@ impl RustAnalyzerTools {
     /// Find all references to a symbol.
     #[tool(
         name = "rust_find_references",
+        annotations(
+            title = "Rust Find References",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Find all references to a symbol at a specific position. Returns one-based file locations."
     )]
     async fn find_references(
@@ -871,6 +898,11 @@ impl RustAnalyzerTools {
     /// Search for symbols by name across the workspace.
     #[tool(
         name = "rust_workspace_symbol",
+        annotations(
+            title = "Rust Workspace Symbol Search",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds."
     )]
     async fn workspace_symbol(
@@ -930,6 +962,11 @@ impl RustAnalyzerTools {
     /// Return server health and configuration status.
     #[tool(
         name = "rust_server_status",
+        annotations(
+            title = "Rust Server Status",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Check rust-analyzer liveness, readiness, active workspace root, and shared lspmux bootstrap metadata."
     )]
     async fn server_status(
@@ -1008,6 +1045,11 @@ impl RustAnalyzerTools {
     /// and client counts.
     #[tool(
         name = "rust_workspace_registry",
+        annotations(
+            title = "Rust Workspace Registry",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "List all rust-analyzer instances the lspmux daemon is currently hosting. Each entry includes pid, workspace_root (raw + canonical), idle_for_ms, and client_count. Use this to debug which workspaces are active, find stale instances, or confirm your workspace has a dedicated rust-analyzer."
     )]
     async fn workspace_registry(
@@ -1041,6 +1083,11 @@ impl RustAnalyzerTools {
     /// List code actions (quick fixes, refactors) for a range.
     #[tool(
         name = "rust_code_actions",
+        annotations(
+            title = "Rust Code Actions",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "List the code actions (quick fixes, refactors) rust-analyzer offers for a range in a file. Each action carries its title, kind, and workspace edit as data; edits are NOT applied, so apply them yourself. Diagnostic-triggered quick fixes may be absent: this sends an empty diagnostics context, so actions keyed to a specific diagnostic at the range are not requested. Input line/character are zero-based; returned ranges are one-based."
     )]
     async fn code_actions(
@@ -1108,6 +1155,11 @@ impl RustAnalyzerTools {
     /// Return a file's hierarchical symbol tree.
     #[tool(
         name = "rust_document_symbols",
+        annotations(
+            title = "Rust Document Symbols",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Outline a Rust file's symbols (modules, functions, structs, impls) as a tree without reading the file. Returns nested records with one-based ranges."
     )]
     async fn document_symbols(
@@ -1156,6 +1208,11 @@ impl RustAnalyzerTools {
     /// Compute the workspace edit for a rename without applying it.
     #[tool(
         name = "rust_rename",
+        annotations(
+            title = "Rust Rename Symbol",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Compute the workspace edit to rename a symbol across the codebase. Returns the per-file text edits as data; NOTHING is written to disk, so apply the edits yourself. Input line/character are zero-based; returned ranges are one-based."
     )]
     async fn rename(
@@ -1211,6 +1268,11 @@ impl RustAnalyzerTools {
     /// Find the implementations of a trait or trait method.
     #[tool(
         name = "rust_goto_implementation",
+        annotations(
+            title = "Rust Go to Implementation",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Find implementations of a trait, trait method, or symbol at a position (textDocument/implementation). Returns one-based file locations, distinct from go-to-definition."
     )]
     async fn goto_implementation(
@@ -1260,6 +1322,11 @@ impl RustAnalyzerTools {
     /// Find the callers of the symbol at a position.
     #[tool(
         name = "rust_call_hierarchy_incoming",
+        annotations(
+            title = "Rust Incoming Calls",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Find the callers of the function/method at a position (prepareCallHierarchy + incomingCalls). Returns each caller and the one-based call-site ranges within it."
     )]
     async fn call_hierarchy_incoming(
@@ -1301,6 +1368,11 @@ impl RustAnalyzerTools {
     /// Find the calls made by the symbol at a position.
     #[tool(
         name = "rust_call_hierarchy_outgoing",
+        annotations(
+            title = "Rust Outgoing Calls",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Find the functions/methods called by the symbol at a position (prepareCallHierarchy + outgoingCalls). Returns each callee and the one-based call-site ranges within the queried symbol."
     )]
     async fn call_hierarchy_outgoing(
@@ -1342,6 +1414,11 @@ impl RustAnalyzerTools {
     /// Expand the macro at a position.
     #[tool(
         name = "rust_expand_macro",
+        annotations(
+            title = "Rust Expand Macro",
+            read_only_hint = true,
+            open_world_hint = false
+        ),
         description = "Expand the macro invocation at a position (rust-analyzer/expandMacro). Returns the macro name and its expanded source text. found=false when the position is not on a macro."
     )]
     async fn expand_macro(
@@ -1661,6 +1738,89 @@ const fn error_code_name(code: ErrorCode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `rust_*` tool must advertise itself as read-only and
+    /// workspace-scoped with a human-readable title. Pins the R1 annotations so
+    /// a future edit or rmcp upgrade cannot silently drop or flip them.
+    #[test]
+    fn tool_annotations_are_read_only_and_titled() {
+        let tools = [
+            (
+                RustAnalyzerTools::diagnostics_tool_attr(),
+                "Rust Diagnostics",
+            ),
+            (RustAnalyzerTools::hover_tool_attr(), "Rust Hover"),
+            (
+                RustAnalyzerTools::goto_definition_tool_attr(),
+                "Rust Go to Definition",
+            ),
+            (
+                RustAnalyzerTools::find_references_tool_attr(),
+                "Rust Find References",
+            ),
+            (
+                RustAnalyzerTools::workspace_symbol_tool_attr(),
+                "Rust Workspace Symbol Search",
+            ),
+            (
+                RustAnalyzerTools::server_status_tool_attr(),
+                "Rust Server Status",
+            ),
+            (
+                RustAnalyzerTools::workspace_registry_tool_attr(),
+                "Rust Workspace Registry",
+            ),
+            (
+                RustAnalyzerTools::code_actions_tool_attr(),
+                "Rust Code Actions",
+            ),
+            (
+                RustAnalyzerTools::document_symbols_tool_attr(),
+                "Rust Document Symbols",
+            ),
+            (RustAnalyzerTools::rename_tool_attr(), "Rust Rename Symbol"),
+            (
+                RustAnalyzerTools::goto_implementation_tool_attr(),
+                "Rust Go to Implementation",
+            ),
+            (
+                RustAnalyzerTools::call_hierarchy_incoming_tool_attr(),
+                "Rust Incoming Calls",
+            ),
+            (
+                RustAnalyzerTools::call_hierarchy_outgoing_tool_attr(),
+                "Rust Outgoing Calls",
+            ),
+            (
+                RustAnalyzerTools::expand_macro_tool_attr(),
+                "Rust Expand Macro",
+            ),
+        ];
+
+        assert_eq!(tools.len(), 14, "all tools must be covered by this test");
+
+        for (tool, expected_title) in tools {
+            let name = tool.name.clone();
+            let annotations = tool
+                .annotations
+                .unwrap_or_else(|| panic!("{name} is missing tool annotations"));
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(true),
+                "{name} must set read_only_hint = true"
+            );
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(false),
+                "{name} must set open_world_hint = false"
+            );
+            assert_eq!(
+                annotations.title.as_deref(),
+                Some(expected_title),
+                "{name} title mismatch"
+            );
+        }
+    }
 
     #[test]
     fn validate_file_path_rejects_relative() {
