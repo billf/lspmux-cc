@@ -106,7 +106,7 @@ Healthy signals:
 - `server_status` is `running`
 - `readiness.health` becomes `ok` after indexing
 - `workspace_root` matches the project
-- `legacy_global_daemon_detected` is false unless you intentionally kept the legacy service-manager path
+- `legacy_global_daemon_detected` is false after legacy service-manager units are removed
 
 For LSP verification, inspect Claude Code's debug logs for the `lspmux` wrapper and `rust-analyzer` initialization.
 

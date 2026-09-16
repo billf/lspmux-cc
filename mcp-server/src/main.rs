@@ -132,9 +132,6 @@ async fn main() -> Result<()> {
             telemetry.record_bootstrap_success(
                 match status.service_mode {
                     lspmux_cc_mcp::bootstrap::ServiceMode::Reused => "reused",
-                    lspmux_cc_mcp::bootstrap::ServiceMode::StartedViaManager => {
-                        "started_via_manager"
-                    }
                     lspmux_cc_mcp::bootstrap::ServiceMode::StartedDirectly => "started_directly",
                     lspmux_cc_mcp::bootstrap::ServiceMode::Skipped => "skipped",
                 },
