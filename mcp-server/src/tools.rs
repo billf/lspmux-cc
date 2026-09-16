@@ -1485,9 +1485,22 @@ fn call_hierarchy_response(
 /// `{"type": "null"}` form loads. Other `nullable` forms (e.g. `{"type": "string",
 /// "nullable": true}` from `Option<String>`) are valid schemas with an ignorable
 /// annotation and are left untouched.
+///
+/// Also strips schemars' `uint`/`uint32`/`uint64` `format` values (emitted for
+/// `usize`/`u32`/`u64`). Opencode's AJV setup knows no such formats and logs
+/// `unknown format ... ignored` per occurrence on every startup. The `type:
+/// integer` + `minimum: 0` constraint schemars already emits is the portable
+/// equivalent, so the format key is dropped while the rest of the node is kept.
 fn normalize_nullable_schema(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
+            if map
+                .get("format")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(is_unsupported_uint_format)
+            {
+                map.remove("format");
+            }
             if matches!(map.get("const"), Some(serde_json::Value::Null))
                 && matches!(map.get("nullable"), Some(serde_json::Value::Bool(true)))
             {
@@ -1510,6 +1523,10 @@ fn normalize_nullable_schema(value: &mut serde_json::Value) {
         }
         _ => {}
     }
+}
+
+fn is_unsupported_uint_format(format: &str) -> bool {
+    matches!(format, "uint" | "uint32" | "uint64")
 }
 
 /// Normalize a tool's input and output schemas for MCP-host compatibility.
@@ -2215,11 +2232,21 @@ mod tests {
                 "input schema for {} still carries a toxic null node",
                 tool.name
             );
+            assert!(
+                !contains_uint_format(&input),
+                "input schema for {} still carries a uint format",
+                tool.name
+            );
             if let Some(output) = tool.output_schema.as_deref() {
                 let output = serde_json::Value::Object(output.clone());
                 assert!(
                     !contains_toxic_null(&output),
                     "output schema for {} still carries a toxic null node",
+                    tool.name
+                );
+                assert!(
+                    !contains_uint_format(&output),
+                    "output schema for {} still carries a uint format",
                     tool.name
                 );
             }
@@ -2247,5 +2274,39 @@ mod tests {
             value,
             serde_json::json!({"type": "string", "nullable": true})
         );
+    }
+
+    #[test]
+    fn normalize_strips_uint_formats_keeping_integer_minimum() {
+        for format in ["uint", "uint32", "uint64"] {
+            let mut value = serde_json::json!({
+                "type": "integer",
+                "format": format,
+                "minimum": 0,
+            });
+            normalize_nullable_schema(&mut value);
+            assert_eq!(
+                value,
+                serde_json::json!({"type": "integer", "minimum": 0}),
+                "format {format} should be stripped",
+            );
+        }
+    }
+
+    fn contains_uint_format(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map
+                    .get("format")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(is_unsupported_uint_format)
+                {
+                    return true;
+                }
+                map.values().any(contains_uint_format)
+            }
+            serde_json::Value::Array(items) => items.iter().any(contains_uint_format),
+            _ => false,
+        }
     }
 }
