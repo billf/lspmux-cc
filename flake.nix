@@ -61,7 +61,7 @@
             src = mcpServerSrc;
             strictDeps = true;
 
-            buildInputs = lib.optionals pkgs.stdenv.isDarwin [
+            buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.libiconv
             ];
           };
@@ -96,7 +96,7 @@
             lspmux = craneLib.buildPackage {
               src = craneLib.cleanCargoSource lspmux-src;
               strictDeps = true;
-              buildInputs = lib.optionals pkgs.stdenv.isDarwin [
+              buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
                 pkgs.libiconv
               ];
               meta.mainProgram = "lspmux";
