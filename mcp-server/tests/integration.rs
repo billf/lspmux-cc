@@ -25,24 +25,22 @@ use lspmux_cc_mcp::lsp_client::LspClient;
 use tokio::process::Command;
 use tokio::time::sleep;
 
-/// Find the line number (0-indexed) of a pattern in a file.
-#[allow(clippy::cast_possible_truncation)]
-fn find_line(path: &Path, pattern: &str) -> Option<u32> {
-    let content = std::fs::read_to_string(path).ok()?;
+/// Find the line number (0-indexed) of a pattern in file content.
+fn find_line_in(content: &str, pattern: &str) -> Option<u32> {
     content
         .lines()
         .position(|l| l.contains(pattern))
-        .map(|n| n as u32)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
-/// Find the column (0-indexed) where `needle` starts within the first line matching `pattern`.
-#[allow(clippy::cast_possible_truncation)]
-fn find_column(path: &Path, pattern: &str, needle: &str) -> Option<u32> {
-    let content = std::fs::read_to_string(path).ok()?;
+/// Find the column (0-indexed) where `needle` starts within the first content
+/// line matching `pattern`.
+fn find_column_in(content: &str, pattern: &str, needle: &str) -> Option<u32> {
     content
         .lines()
         .find(|l| l.contains(pattern))
-        .and_then(|line| line.find(needle).map(|c| c as u32))
+        .and_then(|line| line.find(needle))
+        .and_then(|c| u32::try_from(c).ok())
 }
 
 /// Check if a binary exists on PATH.
@@ -202,14 +200,16 @@ async fn two_clients_share_single_rust_analyzer() {
     sleep(Duration::from_secs(5)).await;
 
     // ── 5. Dynamic line discovery ───────────────────────────────────────
-    let struct_line = find_line(&target_file, "pub struct LspClient")
+    let target_content =
+        std::fs::read_to_string(&target_file).expect("could not read lsp_client.rs");
+    let struct_line = find_line_in(&target_content, "pub struct LspClient")
         .expect("could not find 'pub struct LspClient' in lsp_client.rs");
-    let struct_col = find_column(&target_file, "pub struct LspClient", "LspClient")
+    let struct_col = find_column_in(&target_content, "pub struct LspClient", "LspClient")
         .expect("could not find 'LspClient' column");
 
-    let fn_line = find_line(&target_file, "pub fn file_uri")
+    let fn_line = find_line_in(&target_content, "pub fn file_uri")
         .expect("could not find 'pub fn file_uri' in lsp_client.rs");
-    let fn_col = find_column(&target_file, "pub fn file_uri", "file_uri")
+    let fn_col = find_column_in(&target_content, "pub fn file_uri", "file_uri")
         .expect("could not find 'file_uri' column");
 
     // ── 6. Both hover on LspClient struct ───────────────────────────────

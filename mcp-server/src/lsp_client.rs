@@ -1010,7 +1010,6 @@ mod tests {
             "unchanged content skips didChange"
         );
 
-        // `file` (the `NamedTempFile`) cleans itself up on drop, even on panic.
         kill_fixture_client(&client).await;
     }
 
