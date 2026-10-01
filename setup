@@ -77,13 +77,49 @@ require_rust_analyzer() {
 }
 
 install_lspmux() {
+    local lspmux_binary
     if command -v lspmux >/dev/null 2>&1; then
-        info "lspmux already installed: $(command -v lspmux)"
+        lspmux_binary="$(command -v lspmux)"
+        info "Validating installed lspmux: ${lspmux_binary}"
     else
-        info "Installing lspmux via cargo..."
-        cargo install --locked lspmux
+        info "Installing lspmux 0.3.0 via cargo..."
+        cargo install --locked lspmux --version 0.3.0
+        lspmux_binary="$(command -v lspmux)"
     fi
-    command -v lspmux >/dev/null 2>&1 || die "lspmux not found after install"
+    [ -n "${lspmux_binary:-}" ] || die "lspmux not found after install"
+    validate_lspmux_version "${lspmux_binary}"
+}
+
+validate_lspmux_version() {
+    local lspmux_binary="$1"
+    local output version patch prerelease
+    output="$("${lspmux_binary}" --version 2>/dev/null)" \
+        || die "could not run ${lspmux_binary} --version; supported lspmux range is >=0.3.0, <0.4.0"
+    if [[ "${output}" =~ ^lspmux[[:space:]]+([^[:space:]]+)$ ]]; then
+        version="${BASH_REMATCH[1]}"
+    else
+        die "malformed lspmux version output: ${output@Q}; supported range is >=0.3.0, <0.4.0"
+    fi
+    if [[ ! "${version}" =~ ^0\.3\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+        die "unsupported lspmux version ${version}; supported range is >=0.3.0, <0.4.0"
+    fi
+    patch="${BASH_REMATCH[1]}"
+    prerelease="${BASH_REMATCH[2]:-}"
+    if [ -n "${prerelease}" ]; then
+        local identifier
+        local old_ifs="${IFS}"
+        IFS='.' read -r -a identifiers <<< "${prerelease#-}"
+        IFS="${old_ifs}"
+        for identifier in "${identifiers[@]}"; do
+            if [[ "${identifier}" =~ ^0[0-9]+$ ]]; then
+                die "unsupported lspmux version ${version}; supported range is >=0.3.0, <0.4.0"
+            fi
+        done
+    fi
+    if [ "${patch}" = "0" ] && [ -n "${prerelease}" ]; then
+        die "unsupported lspmux version ${version}; supported range is >=0.3.0, <0.4.0"
+    fi
+    info "Using lspmux ${version}: ${lspmux_binary}"
 }
 
 write_config() {
@@ -92,10 +128,8 @@ write_config() {
         "${SCRIPT_DIR}/config/lspmux.toml" > "${LSPMUX_CONFIG_PATH}"
 }
 
-# Service-manager deployment (deploy_launchd_plist / deploy_systemd_units /
-# start_core_service) was removed in M5. The MCP server spawns lspmux on
-# demand. Users who explicitly want auto-start-on-login can install the
-# in-tree plist/unit themselves and set LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1.
+# Service-manager deployment was removed in M5. The MCP server reuses or
+# directly spawns lspmux on demand; legacy units are migration-only artifacts.
 
 cmd_migrate() {
     info "Removing legacy lspmux service-manager units..."

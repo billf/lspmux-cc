@@ -11,12 +11,16 @@ use std::time::Duration as StdDuration;
 use anyhow::{bail, Context, Result};
 use directories::BaseDirs;
 use schemars::JsonSchema;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 
 /// The managed LSP backend exposed by this package.
 pub const SERVER_NAME: &str = "rust-analyzer";
+
+const LSPMUX_SUPPORTED_VERSION: &str = ">=0.3.0, <0.4.0";
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Environment-controlled bootstrap behavior.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
@@ -101,7 +105,6 @@ fn parse_tcp_host_port(raw: &str) -> Option<ConnectAddr> {
 #[serde(rename_all = "snake_case")]
 pub enum ServiceMode {
     Reused,
-    StartedViaManager,
     StartedDirectly,
     Skipped,
 }
@@ -277,7 +280,7 @@ impl RuntimeConfig {
     /// Returns an error if prerequisites are missing or the configured bootstrap policy
     /// cannot make the shared service available.
     pub async fn ensure_service_running(&self) -> Result<RuntimeStatus> {
-        self.validate_prerequisites()?;
+        self.validate_prerequisites().await?;
 
         if self.bootstrap_mode == BootstrapMode::Off {
             return Ok(self.runtime_status(ServiceMode::Skipped).await);
@@ -287,23 +290,10 @@ impl RuntimeConfig {
             return Ok(self.runtime_status(ServiceMode::Reused).await);
         }
 
-        // Service-manager bootstrap (launchd/systemd) is opt-in post-M5.
-        // Default behavior is on-demand spawn via `start_direct_server`. Users
-        // who explicitly want the legacy auto-start path set
-        // `LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1` and keep the plist/unit installed.
-        if std::env::var("LSPMUX_ALLOW_MANAGER_BOOTSTRAP").as_deref() == Ok("1")
-            && self.is_default_config_path()
-            && self.try_start_via_manager().await?
-            && self.wait_for_socket().await
-        {
-            return Ok(self.runtime_status(ServiceMode::StartedViaManager).await);
-        }
-
         if self.bootstrap_mode == BootstrapMode::Require {
             bail!(
                 "lspmux daemon is unreachable at {} and BootstrapMode::Require forbids spawning. \
-                 Start it manually, set LSPMUX_BOOTSTRAP=auto to allow spawn, or set \
-                 LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1 if you still rely on the launchd/systemd unit.",
+                 Start it manually or set LSPMUX_BOOTSTRAP=auto to allow direct spawn.",
                 self.socket_path
             );
         }
@@ -435,10 +425,10 @@ impl RuntimeConfig {
         parse_status_instances(&stdout)
     }
 
-    fn validate_prerequisites(&self) -> Result<()> {
-        if !Path::new(&self.lspmux_path).exists() {
+    async fn validate_prerequisites(&self) -> Result<()> {
+        if !is_executable(Path::new(&self.lspmux_path)) {
             bail!(
-                "lspmux binary not found at {}; install it or set LSPMUX_PATH",
+                "lspmux binary not found or not executable at {}; install it or set LSPMUX_PATH to a trusted executable",
                 self.lspmux_path
             );
         }
@@ -454,6 +444,9 @@ impl RuntimeConfig {
                 self.config_path
             );
         }
+
+        validate_lspmux_version(&self.lspmux_path).await?;
+        log_rust_analyzer_version(self.server_path.clone());
         Ok(())
     }
 
@@ -476,44 +469,6 @@ impl RuntimeConfig {
         false
     }
 
-    async fn try_start_via_manager(&self) -> Result<bool> {
-        #[cfg(target_os = "macos")]
-        {
-            let label = "com.lspmux.server";
-            let plist = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                .join("Library/LaunchAgents")
-                .join(format!("{label}.plist"));
-            if !plist.exists() {
-                return Ok(false);
-            }
-
-            let status = Command::new("launchctl")
-                .arg("bootstrap")
-                .arg(format!("gui/{}", nix_like_uid()))
-                .arg(&plist)
-                .stderr(std::process::Stdio::null())
-                .status()
-                .await
-                .context("failed to run launchctl bootstrap")?;
-            // Exit code 5 means the service is already loaded, which is fine.
-            let already_loaded = status.code() == Some(5);
-            return Ok(status.success() || already_loaded);
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let status = Command::new("systemctl")
-                .args(["--user", "start", "lspmux.service"])
-                .status()
-                .await
-                .context("failed to run systemctl --user start lspmux.service")?;
-            return Ok(status.success());
-        }
-
-        #[allow(unreachable_code)]
-        Ok(false)
-    }
-
     fn start_direct_server(&self) -> Result<()> {
         // `lspmux server` (0.3.0+) takes no `--config` flag; it always reads
         // its own platform-default config path. Passing `--config` here makes
@@ -531,12 +486,124 @@ impl RuntimeConfig {
             .context("failed to spawn lspmux server directly")?;
         Ok(())
     }
+}
 
-    fn is_default_config_path(&self) -> bool {
-        let base_dirs = BaseDirs::new();
-        self.config_path
-            == default_config_path(base_dirs.as_ref(), &home_dir_string(base_dirs.as_ref()))
+#[derive(Debug, PartialEq, Eq)]
+enum LspmuxVersionProbe {
+    Reported(Version),
+    CommandFailed,
+    TimedOut,
+    Malformed(String),
+}
+
+impl LspmuxVersionProbe {
+    fn from_output(output: &str) -> Self {
+        let output = output.trim();
+        let mut fields = output.split_whitespace();
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some("lspmux"), Some(version), None) => Version::parse(version)
+                .map_or_else(|_| Self::Malformed(output.to_owned()), Self::Reported),
+            _ => Self::Malformed(output.to_owned()),
+        }
     }
+
+    fn contract_error(&self) -> anyhow::Error {
+        let detected = match self {
+            Self::Reported(version) => version.to_string(),
+            Self::CommandFailed => "unavailable (lspmux --version failed)".to_string(),
+            Self::TimedOut => "unavailable (lspmux --version timed out)".to_string(),
+            Self::Malformed(output) => format!("malformed output {output:?}"),
+        };
+        anyhow::anyhow!(
+            "unsupported lspmux version {detected}; supported range is {LSPMUX_SUPPORTED_VERSION}. \
+             This project invokes `lspmux server` without `--config`."
+        )
+    }
+}
+
+fn is_supported_lspmux_version(version: &Version) -> bool {
+    version >= &Version::new(0, 3, 0) && version < &Version::new(0, 4, 0)
+}
+
+enum VersionCommandFailure {
+    CommandFailed,
+    TimedOut,
+}
+
+async fn run_version_command(path: &str) -> Result<std::process::Output, VersionCommandFailure> {
+    let invocation = Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(VERSION_PROBE_TIMEOUT, invocation).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(_)) => Err(VersionCommandFailure::CommandFailed),
+        Err(_) => Err(VersionCommandFailure::TimedOut),
+    }
+}
+
+async fn validate_lspmux_version(path: &str) -> Result<()> {
+    let probe = match run_version_command(path).await {
+        Ok(output) if output.status.success() => {
+            LspmuxVersionProbe::from_output(&String::from_utf8_lossy(&output.stdout))
+        }
+        Ok(_) | Err(VersionCommandFailure::CommandFailed) => LspmuxVersionProbe::CommandFailed,
+        Err(VersionCommandFailure::TimedOut) => LspmuxVersionProbe::TimedOut,
+    };
+    match probe {
+        LspmuxVersionProbe::Reported(version) if is_supported_lspmux_version(&version) => {
+            tracing::info!(lspmux_path = path, lspmux_version = %version, "validated lspmux binary");
+            Ok(())
+        }
+        probe => Err(probe.contract_error()),
+    }
+}
+
+fn log_rust_analyzer_version(path: String) {
+    tokio::spawn(async move {
+        if let Some(version) = probe_rust_analyzer_version(&path).await {
+            tracing::info!(
+                rust_analyzer_path = %path,
+                rust_analyzer_version = %version,
+                "resolved rust-analyzer binary"
+            );
+        } else {
+            tracing::warn!(
+                rust_analyzer_path = %path,
+                "could not determine rust-analyzer version; continuing with degraded observability"
+            );
+        }
+    });
+}
+
+async fn probe_rust_analyzer_version(path: &str) -> Option<String> {
+    let output = run_version_command(path).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!version.is_empty()).then_some(version)
+}
+
+/// Whether `path` names an executable file the runtime may spawn.
+///
+/// `LSPMUX_PATH` (and the `PATH` fallback) is trusted-operator input: the
+/// selected binary is executed as the shared daemon. Existence alone is not
+/// enough — a stale non-executable file must fail here with a clear error
+/// rather than later at spawn or version-probe time.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn home_dir_string(base_dirs: Option<&BaseDirs>) -> String {
@@ -862,6 +929,134 @@ mod tests {
     #[test]
     fn bootstrap_mode_rejects_unknown_values() {
         assert!(BootstrapMode::parse(Some("weird")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_check_rejects_missing_or_non_executable_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let candidate = tempdir.path().join("lspmux");
+        assert!(!is_executable(&candidate));
+
+        fs::write(&candidate, "lspmux 0.3.0\n").unwrap();
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_executable(&candidate));
+
+        write_executable(&candidate, "#!/bin/sh\necho 'lspmux 0.3.0'\n");
+        assert!(is_executable(&candidate));
+    }
+
+    #[test]
+    fn lspmux_version_output_parses_and_enforces_the_supported_range() {
+        let cases = [
+            ("lspmux 0.2.9", false),
+            ("lspmux 0.3.0", true),
+            ("lspmux 0.3.7", true),
+            ("lspmux 0.4.0", false),
+            ("lspmux version 0.3.0", false),
+            ("not a version", false),
+            ("", false),
+        ];
+
+        for (output, accepted) in cases {
+            let probe = LspmuxVersionProbe::from_output(output);
+            let version = match probe {
+                LspmuxVersionProbe::Reported(version) => version,
+                other => {
+                    assert!(!accepted, "{output:?} unexpectedly failed as {other:?}");
+                    continue;
+                }
+            };
+            assert_eq!(
+                is_supported_lspmux_version(&version),
+                accepted,
+                "range result for {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lspmux_version_errors_name_the_contract_and_detected_state() {
+        for probe in [
+            LspmuxVersionProbe::CommandFailed,
+            LspmuxVersionProbe::TimedOut,
+            LspmuxVersionProbe::Malformed("unexpected".to_string()),
+            LspmuxVersionProbe::Reported(Version::new(0, 4, 0)),
+        ] {
+            let error = probe.contract_error().to_string();
+            assert!(error.contains(LSPMUX_SUPPORTED_VERSION));
+            assert!(error.contains("lspmux server` without `--config"));
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn version_failure_happens_before_readiness_polling() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let lspmux = tempdir.path().join("lspmux");
+        let rust_analyzer = tempdir.path().join("rust-analyzer");
+        let config_path = tempdir.path().join("config.toml");
+        let socket_path = tempdir.path().join("never-ready.sock");
+        write_executable(&lspmux, "#!/bin/sh\nsleep 10\n");
+        write_executable(&rust_analyzer, "#!/bin/sh\necho rust-analyzer 1.0\n");
+        fs::write(&config_path, "connect = '/tmp/unused.sock'\n").unwrap();
+        let config = RuntimeConfig {
+            lspmux_path: lspmux.to_string_lossy().into_owned(),
+            server_path: rust_analyzer.to_string_lossy().into_owned(),
+            workspace_root: None,
+            config_path: config_path.to_string_lossy().into_owned(),
+            socket_path: socket_path.to_string_lossy().into_owned(),
+            bootstrap_mode: BootstrapMode::Auto,
+            connect_addr: Some(ConnectAddr::Unix(
+                socket_path.to_string_lossy().into_owned(),
+            )),
+        };
+
+        let started = Instant::now();
+        let error = config
+            .ensure_service_running()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("timed out"));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "version validation should fail before the five-second readiness poll"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rust_analyzer_version_failure_is_non_fatal() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let lspmux = tempdir.path().join("lspmux");
+        let rust_analyzer = tempdir.path().join("rust-analyzer");
+        let config_path = tempdir.path().join("config.toml");
+        write_executable(&lspmux, "#!/bin/sh\necho 'lspmux 0.3.0'\n");
+        write_executable(&rust_analyzer, "#!/bin/sh\nexit 1\n");
+        fs::write(&config_path, "connect = '/tmp/unused.sock'\n").unwrap();
+        let config = RuntimeConfig {
+            lspmux_path: lspmux.to_string_lossy().into_owned(),
+            server_path: rust_analyzer.to_string_lossy().into_owned(),
+            workspace_root: None,
+            config_path: config_path.to_string_lossy().into_owned(),
+            socket_path: tempdir.path().join("socket").to_string_lossy().into_owned(),
+            bootstrap_mode: BootstrapMode::Require,
+            connect_addr: None,
+        };
+
+        assert!(config.validate_prerequisites().await.is_ok());
+        assert_eq!(probe_rust_analyzer_version(&config.server_path).await, None);
     }
 
     #[test]

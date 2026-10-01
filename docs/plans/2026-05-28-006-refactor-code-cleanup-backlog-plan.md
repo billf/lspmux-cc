@@ -36,7 +36,7 @@ reason, in the owning change, rather than revived as a sweep.
 | Async path metadata | deferred | A local metadata check is not a demonstrated async-runtime bottleneck. |
 | Stdlib-only tests | closed | Retain tests that exercise the client’s synchronization and lifecycle invariants, not just the standard-library primitive. |
 | Shell error-prefix normalization | closed | Cosmetic-only; do it opportunistically when touching a script. |
-| Binary-resolution documentation | delivered elsewhere | Host guides document supported configuration and overrides; a separate exhaustive cascade would become stale quickly. |
+| Binary-resolution documentation | delivered elsewhere | The warning against an exhaustive cascade remains valid. A concise contract guide is now warranted because a broken external CLI contract caused a real bootstrap failure; see [binary-resolution.md](../binary-resolution.md). |
 | `sed` replacement concern | closed | The setup substitution uses a safe delimiter with repository-controlled replacement data. |
 
 ## Follow-up rule
