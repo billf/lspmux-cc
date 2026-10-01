@@ -23,28 +23,18 @@ systemctl --user is-active lspmux.service        # Linux: "inactive"
 
 `rust_server_status` returns a `legacy_global_daemon_detected: true` flag when a service-manager unit is still loaded. `./setup doctor` surfaces the same signal with a `[~~]` marker and points at `./setup migrate`.
 
-## Keeping the legacy auto-start path
+## Deferred managed-daemon mode
 
-If you specifically want `lspmux server` to run at login (rather than be spawned on first MCP use), install the plist/unit manually and set the escape-hatch env var:
+A managed daemon is not supported today. `auto` only reuses a reachable daemon
+or directly spawns one; it never registers, starts, or owns a launchd/systemd
+unit. The simpler model avoids competing daemons and makes ordinary bootstrap
+portable.
 
-```
-# macOS — install the plist yourself from the repo's launchd/ template,
-# substituting the path variables, then:
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lspmux.server.plist
-
-# Linux:
-mkdir -p ~/.config/systemd/user
-# install the unit yourself, then:
-systemctl --user daemon-reload
-systemctl --user enable --now lspmux.service
-
-# In your shell config:
-export LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1
-```
-
-Without `LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1`, the MCP server ignores any service-manager units and always uses the on-demand path.
-
-`LSPMUX_ALLOW_MANAGER_BOOTSTRAP=1` only takes effect when the lspmux config file lives at the platform default location (`~/Library/Application Support/lspmux/config.toml` on macOS, `~/.config/lspmux/config.toml` on Linux). If you set a custom `LSPMUX_CONFIG_PATH`, the service-manager bootstrap won't fire — you need both the env var AND the default config path. Otherwise the MCP server falls through to on-demand spawn.
+Reconsider a managed mode only when users need a durable daemon lifecycle that
+on-demand spawning cannot provide. It must be an explicit bootstrap mode with
+explicit unit installation and lifecycle commands, version-aware upgrades,
+standard log locations, and integration coverage for install, upgrade, reuse,
+and removal. A service manager must never be an implicit side effect of `auto`.
 
 ## Nix-darwin / home-manager users
 

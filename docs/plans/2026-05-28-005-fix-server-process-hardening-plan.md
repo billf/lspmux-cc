@@ -17,7 +17,7 @@ The direct-spawn bootstrap path (`start_direct_server()` in `mcp-server/src/boot
 
 ## Problem Frame
 
-- **SEC-4 (open):** `start_direct_server()` builds `lspmux server --config <path>`, sets `stdout`/`stderr` to `Stdio::null()`, calls `.spawn()`, and drops the returned child. There is no spawn lease, PID record, or `kill_on_drop`. Concurrent bootstraps can spawn duplicate servers for the same endpoint; spawned-server output is discarded (`/dev/null`), so failures are undiagnosable.
+- **SEC-4 (open):** `start_direct_server()` invokes `lspmux server` without `--config`, sets `stdout`/`stderr` to `Stdio::null()`, calls `.spawn()`, and drops the returned child. There is no spawn lease, PID record, or `kill_on_drop`. Concurrent bootstraps can spawn duplicate servers for the same endpoint; spawned-server output is discarded (`/dev/null`), so failures are undiagnosable.
 - **SEC-5 (already resolved):** the review flagged the socket directory at default 0755 (world-accessible socket under `/tmp/lspmux/`). Verification shows `setup` already creates the dirs and runs `chmod 700 "${LSPMUX_SOCKET_DIR}"` (`setup:46-47`). No code change needed; add a regression guard so it can't silently regress.
 
 Socket dir precedence (verified, `setup:13-23`): `XDG_RUNTIME_DIR` → `TMPDIR` → `/tmp`, with the lspmux dir under `RUNTIME_BASE`.
@@ -130,7 +130,7 @@ and TCP endpoints.
 
 ## Scope Boundaries
 
-In scope: SEC-4 endpoint-scoped spawn lease + file logging; a SEC-5 regression guard.
+In scope: SEC-4 endpoint-scoped spawn lease + file logging; a SEC-5 regression guard. lspmux version validation is owned by [the external binary contracts plan](2026-09-08-001-harden-external-binary-contracts-and-simplify-bootstrap-plan.md); its lease implementation must preserve that validated `lspmux server` contract.
 
 ### Deferred to Follow-Up Work
 - Broader daemon-lifecycle management (graceful shutdown, idle reaping) beyond duplicate-spawn prevention.
