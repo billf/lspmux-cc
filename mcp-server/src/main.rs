@@ -15,7 +15,7 @@ use lspmux_cc_mcp::bootstrap::{RuntimeConfig, SERVER_NAME};
 use lspmux_cc_mcp::lsp_client::LspClient;
 use lspmux_cc_mcp::telemetry::TelemetryState;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, Implementation, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, Implementation, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{RequestContext, ServiceExt};
 use rmcp::transport::io::stdio;
@@ -30,8 +30,8 @@ struct LspmuxMcpServer {
 }
 
 impl ServerHandler for LspmuxMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
