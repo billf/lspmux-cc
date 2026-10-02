@@ -159,8 +159,10 @@ pub struct WorkspaceSymbolParam {
     pub query: String,
     /// Maximum number of results to return. Defaults to 200, capped at 1000.
     /// Results beyond the cap are dropped and `truncated` is set.
-    #[serde(default)]
-    pub max_results: Option<u32>,
+    /// Values below 1 (including negatives) are clamped to 1.
+    /// Accepts integers, floats (truncated toward zero), and numeric strings.
+    #[serde(default, deserialize_with = "de_max_results")]
+    pub max_results: Option<i64>,
 }
 
 /// Tool parameters: file path + position + an optional result cap.
@@ -179,8 +181,10 @@ pub struct ReferencesParam {
     pub character: u32,
     /// Maximum number of results to return. Defaults to 200, capped at 1000.
     /// Results beyond the cap are dropped and `truncated` is set.
-    #[serde(default)]
-    pub max_results: Option<u32>,
+    /// Values below 1 (including negatives) are clamped to 1.
+    /// Accepts integers, floats (truncated toward zero), and numeric strings.
+    #[serde(default, deserialize_with = "de_max_results")]
+    pub max_results: Option<i64>,
 }
 
 /// Empty parameter struct for tools that take no arguments.
@@ -623,18 +627,60 @@ const DEFAULT_MAX_RESULTS: usize = 200;
 /// Hard upper bound on `max_results`; larger requests are clamped to this.
 const MAX_RESULTS_LIMIT: usize = 1000;
 
+/// Deserialize `max_results` leniently: JSON integers pass through, floats
+/// truncate toward zero, and numeric strings parse; anything else (bools,
+/// arrays, objects, non-numeric strings) is an invalid-params error naming
+/// the accepted shapes. Missing or null means "no preference" (default cap).
+fn de_max_results<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let accepted = "max_results must be an integer, a float, or a numeric string";
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| {
+                let f = n.as_f64()?;
+                // Saturating `as` is exact here: `trunc()` removed the
+                // fraction, and out-of-range magnitudes saturate to an
+                // extreme the resolver clamps into 1..=MAX_RESULTS_LIMIT.
+                #[allow(clippy::cast_possible_truncation)]
+                Some(f.trunc() as i64)
+            })
+            .map(Some)
+            .ok_or_else(|| D::Error::custom(accepted)),
+        serde_json::Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| D::Error::custom(accepted)),
+        _ => Err(D::Error::custom(accepted)),
+    }
+}
+
 /// Resolve a caller-supplied `max_results` into an effective cap: apply the
 /// default when unset, and clamp any value to `1..=MAX_RESULTS_LIMIT`.
-fn resolve_max_results(requested: Option<u32>) -> usize {
+/// `i64` (not `u32`) so out-of-range JSON (negatives, floats-as-ints) reaches
+/// the clamp instead of failing deserialization before it.
+fn resolve_max_results(requested: Option<i64>) -> usize {
+    // Both fallbacks are unreachable in practice: the limit constant fits
+    // easily, and the clamp keeps `n` positive -- they exist only because
+    // `try_from` (which clippy pedantic requires over `as` casts) is partial.
     requested.map_or(DEFAULT_MAX_RESULTS, |n| {
-        (n as usize).clamp(1, MAX_RESULTS_LIMIT)
+        let limit = i64::try_from(MAX_RESULTS_LIMIT).unwrap_or(i64::MAX);
+        usize::try_from(n.clamp(1, limit)).unwrap_or(MAX_RESULTS_LIMIT)
     })
 }
 
 /// Apply the resolved result cap to a list, returning the (possibly truncated)
 /// items, the pre-cap total, and whether truncation occurred. Centralizing this
 /// keeps the `truncated` flag, the returned length, and the total in sync.
-fn apply_cap<T>(mut items: Vec<T>, max_results: Option<u32>) -> (Vec<T>, usize, bool) {
+/// Note: the cap bounds what is *returned*, not what the server computes --
+/// the full query still runs (so an empty workspace-symbol query still scans
+/// the whole index); `max_results` saves model context, not server work.
+fn apply_cap<T>(mut items: Vec<T>, max_results: Option<i64>) -> (Vec<T>, usize, bool) {
     let total = items.len();
     let cap = resolve_max_results(max_results);
     let truncated = total > cap;
@@ -644,19 +690,62 @@ fn apply_cap<T>(mut items: Vec<T>, max_results: Option<u32>) -> (Vec<T>, usize, 
     (items, total, truncated)
 }
 
+/// Summary line for `find_references` responses. Extracted (rather than inline)
+/// so the truncated/total wiring is unit-testable without a live server.
+fn references_summary(location_count: usize, total_count: usize, truncated: bool) -> String {
+    if location_count == 0 {
+        "No references found at this position.".to_string()
+    } else if truncated {
+        truncation_note("reference(s)", location_count, total_count, true)
+    } else {
+        format!("Found {location_count} reference(s).")
+    }
+}
+
+/// Summary line for `workspace_symbol` responses. `suggest_more` follows the
+/// query length: a one-character scan stays arbitrary at any cap.
+fn workspace_summary(
+    query: &str,
+    symbol_count: usize,
+    total_count: usize,
+    truncated: bool,
+) -> String {
+    if symbol_count == 0 {
+        format!("No symbols found matching {query:?}.")
+    } else if truncated {
+        // A one-character query stays a relevance-free scan at any cap,
+        // so skip the raise-max_results hint and point at narrowing.
+        let suggest_more = query.trim().len() >= 2;
+        truncation_note(
+            &format!("symbol(s) matching {query:?}"),
+            symbol_count,
+            total_count,
+            suggest_more,
+        )
+    } else {
+        format!("Found {symbol_count} symbol(s) matching {query:?}.")
+    }
+}
 /// Summary line for a truncated list result. Leads with "Truncated" so an agent
 /// reading only the summary still sees it, and stops suggesting a larger
-/// `max_results` once the hard cap is already hit.
-fn truncation_note(noun: &str, returned: usize, total: usize) -> String {
+/// `max_results` once the hard cap is already hit. `suggest_more` selects the
+/// cap-walk hint; pass false when the query is too short for a larger cap to
+/// help (a one-character prefix scan stays arbitrary at any cap).
+fn truncation_note(noun: &str, returned: usize, total: usize, suggest_more: bool) -> String {
     if returned >= MAX_RESULTS_LIMIT {
         format!(
             "Truncated: showing the first {returned} of {total} {noun}. This is the \
              {MAX_RESULTS_LIMIT}-result hard cap; narrow the query to see the rest."
         )
-    } else {
+    } else if suggest_more {
         format!(
             "Truncated: showing the first {returned} of {total} {noun}. Pass a larger \
              max_results (up to {MAX_RESULTS_LIMIT}) to see more."
+        )
+    } else {
+        format!(
+            "Truncated: showing the first {returned} of {total} {noun}. Narrow the \
+             query to see more."
         )
     }
 }
@@ -939,7 +1028,7 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Find all references to a symbol at a specific position. Returns one-based file locations. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total."
+        description = "Find all references to a symbol at a specific position. Returns one-based file locations. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total. Values below 1 clamp to 1. The cap limits returned results only; the full query still runs."
     )]
     async fn find_references(
         &self,
@@ -966,13 +1055,7 @@ impl RustAnalyzerTools {
         let (locations, total_count, truncated) = apply_cap(locations, p.max_results);
         let found = !locations.is_empty();
         let location_count = locations.len();
-        let summary = if !found {
-            "No references found at this position.".to_string()
-        } else if truncated {
-            truncation_note("reference(s)", location_count, total_count)
-        } else {
-            format!("Found {location_count} reference(s).")
-        };
+        let summary = references_summary(location_count, total_count, truncated);
 
         Ok(Json(LocationsResponse {
             file_path: p.file_path.clone(),
@@ -997,13 +1080,19 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total."
+        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total. Values below 1 clamp to 1. The cap limits returned results only; the full query still runs."
     )]
     async fn workspace_symbol(
         &self,
         params: Parameters<WorkspaceSymbolParam>,
     ) -> Result<Json<WorkspaceSymbolsResponse>, McpError> {
         let query = &params.0.query;
+        if query.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "workspace symbol query must not be blank; pass a narrowed substring",
+                None,
+            ));
+        }
         let symbols = self
             .lsp
             .workspace_symbols(query.clone())
@@ -1040,17 +1129,7 @@ impl RustAnalyzerTools {
 
         let (records, total_count, truncated) = apply_cap(records, params.0.max_results);
         let symbol_count = records.len();
-        let summary = if symbol_count == 0 {
-            format!("No symbols found matching {query:?}.")
-        } else if truncated {
-            truncation_note(
-                &format!("symbol(s) matching {query:?}"),
-                symbol_count,
-                total_count,
-            )
-        } else {
-            format!("Found {symbol_count} symbol(s) matching {query:?}.")
-        };
+        let summary = workspace_summary(query, symbol_count, total_count, truncated);
 
         Ok(Json(WorkspaceSymbolsResponse {
             query: query.clone(),
@@ -1923,6 +2002,22 @@ mod tests {
 
         assert_eq!(tools.len(), 14, "all tools must be covered by this test");
 
+        // Drive the count from the live router: a 15th auto-registered tool
+        // must fail here instead of passing 14==14 on the hand-built array.
+        let router_names: std::collections::BTreeSet<String> = RustAnalyzerTools::tool_router()
+            .list_all()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        let attr_names: std::collections::BTreeSet<String> = tools
+            .iter()
+            .map(|(tool, _)| tool.name.to_string())
+            .collect();
+        assert_eq!(
+            router_names, attr_names,
+            "live router tools must match the pinned metadata array"
+        );
+
         for (tool, expected_title) in tools {
             let name = tool.name.clone();
             assert!(
@@ -2004,6 +2099,22 @@ mod tests {
         assert_eq!(resolve_max_results(Some(50)), 50);
         assert_eq!(resolve_max_results(Some(0)), 1, "zero clamps up to 1");
         assert_eq!(
+            resolve_max_results(Some(-1)),
+            1,
+            "negatives clamp up to 1 instead of failing"
+        );
+        assert_eq!(resolve_max_results(Some(1)), 1, "inclusive lower bound");
+        assert_eq!(
+            resolve_max_results(Some(1000)),
+            1000,
+            "inclusive upper bound"
+        );
+        assert_eq!(
+            resolve_max_results(Some(1001)),
+            MAX_RESULTS_LIMIT,
+            "just over the cap clamps down"
+        );
+        assert_eq!(
             resolve_max_results(Some(100_000)),
             MAX_RESULTS_LIMIT,
             "oversized requests clamp to the hard cap"
@@ -2029,6 +2140,112 @@ mod tests {
         assert_eq!(items, vec![1, 2]);
         assert_eq!(total, 5);
         assert!(truncated);
+
+        // Unset (the production default): truncates at 200, total is exact.
+        let big: Vec<u32> = (0..250).collect();
+        let (items, total, truncated) = apply_cap(big, None);
+        assert_eq!(items.len(), DEFAULT_MAX_RESULTS);
+        assert_eq!(total, 250);
+        assert!(truncated);
+
+        // Degenerate inputs compose through the same clamp.
+        let (items, _, truncated) = apply_cap(vec![1, 2, 3], Some(0));
+        assert_eq!(items.len(), 1);
+        assert!(truncated);
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3], Some(100_000));
+        assert_eq!(items.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncation_note_covers_both_legs() {
+        let below = truncation_note("reference(s)", 200, 250, true);
+        assert!(below.starts_with("Truncated"));
+        assert!(below.contains("250"));
+        assert!(below.contains("larger max_results"));
+
+        let capped = truncation_note("reference(s)", 1000, 1500, true);
+        assert!(capped.contains("hard cap"));
+        assert!(capped.contains("narrow the query"));
+
+        // Short queries skip the raise-max_results hint: a larger cap
+        // cannot help a relevance-free scan.
+        let short = truncation_note("symbol(s) matching \"x\"", 50, 300, false);
+        assert!(short.starts_with("Truncated"));
+        assert!(!short.contains("larger max_results"));
+        assert!(short.contains("Narrow the query"));
+    }
+
+    #[test]
+    fn lsp_request_error_names_operation_and_hints_retry() {
+        let err = lsp_request_error("hover", &anyhow::anyhow!("boom")).to_string();
+        assert!(err.contains("hover"), "names the operation, got: {err}");
+        assert!(
+            err.contains("rust_server_status"),
+            "keeps the retry hint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn summary_builders_wire_truncation_totals_and_hints() {
+        // References: empty, plain, and truncated shapes.
+        assert_eq!(
+            references_summary(0, 0, false),
+            "No references found at this position."
+        );
+        assert_eq!(references_summary(3, 3, false), "Found 3 reference(s).");
+        let truncated = references_summary(200, 250, true);
+        assert!(truncated.starts_with("Truncated"));
+        assert!(truncated.contains("250"));
+
+        // Workspace: empty, plain, truncated with and without the cap hint.
+        assert_eq!(
+            workspace_summary("Foo", 0, 0, false),
+            "No symbols found matching \"Foo\"."
+        );
+        assert_eq!(
+            workspace_summary("Foo", 2, 2, false),
+            "Found 2 symbol(s) matching \"Foo\"."
+        );
+        let capped = workspace_summary("Foo", 200, 500, true);
+        assert!(capped.contains("larger max_results"));
+        let short = workspace_summary("x", 50, 300, true);
+        assert!(!short.contains("larger max_results"));
+        assert!(short.contains("Narrow the query"));
+    }
+
+    #[test]
+    fn negative_max_results_deserializes_and_clamps() {
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": -1 });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(-1));
+        assert_eq!(resolve_max_results(param.max_results), 1);
+    }
+
+    #[test]
+    fn float_and_string_max_results_coerce_or_reject() {
+        // Fractional floats truncate toward zero, then clamp.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": 2.5 });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(2));
+
+        // Numeric strings parse.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": "200" });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(200));
+
+        // Anything else is an invalid-params deserialization error.
+        for bad in [
+            serde_json::json!({ "query": "MyStruct", "max_results": true }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "many" }),
+            serde_json::json!({ "query": "MyStruct", "max_results": [10] }),
+        ] {
+            assert!(
+                serde_json::from_value::<WorkspaceSymbolParam>(bad).is_err(),
+                "non-numeric max_results must fail deserialization"
+            );
+        }
     }
 
     #[test]
