@@ -59,15 +59,12 @@ impl ServerHandler for LspmuxMcpServer {
                  Use rust_server_status to confirm the correct workspace root and shared-service \
                  bootstrap state. If the workspace root is wrong, set WORKSPACE_ROOT in the \
                  host's MCP env and reconnect; rust_workspace_registry lists the active \
-                 workspaces."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability { list_changed: None }),
-                ..ServerCapabilities::default()
-            },
-            ..ServerInfo::default()
-        }
+                 workspaces.\n\
+                 \n\
+                 List tools (`rust_find_references`, `rust_workspace_symbol`) cap results \
+                 at `max_results` (default 200, hard cap 1000) and set `truncated`/`total_count` \
+                 when capped; raise `max_results` or narrow the query.",
+            )
     }
 
     fn list_tools(
