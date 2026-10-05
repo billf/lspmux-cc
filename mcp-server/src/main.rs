@@ -62,8 +62,10 @@ impl ServerHandler for LspmuxMcpServer {
                  workspaces.\n\
                  \n\
                  List tools (`rust_find_references`, `rust_workspace_symbol`) cap results \
-                 at `max_results` (default 200, hard cap 1000) and set `truncated`/`total_count` \
-                 when capped; raise `max_results` or narrow the query.",
+                 at `max_results` (default 200, hard cap 1000); responses always carry \
+                 `truncated`/`total_count`, and the cap bounds returned results only, not \
+                 server work. Below the hard cap raise `max_results`; at the hard cap \
+                 narrow the query.",
             )
     }
 

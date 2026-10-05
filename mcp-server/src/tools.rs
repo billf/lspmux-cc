@@ -160,8 +160,11 @@ pub struct WorkspaceSymbolParam {
     /// Maximum number of results to return. Defaults to 200, capped at 1000.
     /// Results beyond the cap are dropped and `truncated` is set.
     /// Values below 1 (including negatives) are clamped to 1.
-    /// Accepts integers, floats (truncated toward zero), and numeric strings.
+    /// Accepts integers, floats (truncated toward zero), and numeric strings
+    /// (float spellings truncate the same way). The cap limits returned
+    /// results only; the full query still runs server-side.
     #[serde(default, deserialize_with = "de_max_results")]
+    #[schemars(schema_with = "max_results_schema")]
     pub max_results: Option<i64>,
 }
 
@@ -182,8 +185,11 @@ pub struct ReferencesParam {
     /// Maximum number of results to return. Defaults to 200, capped at 1000.
     /// Results beyond the cap are dropped and `truncated` is set.
     /// Values below 1 (including negatives) are clamped to 1.
-    /// Accepts integers, floats (truncated toward zero), and numeric strings.
+    /// Accepts integers, floats (truncated toward zero), and numeric strings
+    /// (float spellings truncate the same way). The cap limits returned
+    /// results only; the full query still runs server-side.
     #[serde(default, deserialize_with = "de_max_results")]
+    #[schemars(schema_with = "max_results_schema")]
     pub max_results: Option<i64>,
 }
 
@@ -627,6 +633,22 @@ const DEFAULT_MAX_RESULTS: usize = 200;
 /// Hard upper bound on `max_results`; larger requests are clamped to this.
 const MAX_RESULTS_LIMIT: usize = 1000;
 
+/// JSON Schema for `max_results` matching the lenient runtime contract
+/// (`de_max_results`): integers, floats, and numeric strings, all optional.
+/// schemars derives schemas from types, so without this override the derived
+/// integer-only schema would reject at validation time the very shapes the
+/// deserializer accepts.
+fn max_results_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            {"type": "integer"},
+            {"type": "number"},
+            {"type": "string"},
+            {"type": "null"},
+        ]
+    })
+}
+
 /// Deserialize `max_results` leniently: JSON integers pass through, floats
 /// truncate toward zero, and numeric strings parse; anything else (bools,
 /// arrays, objects, non-numeric strings) is an invalid-params error naming
@@ -651,11 +673,26 @@ where
             })
             .map(Some)
             .ok_or_else(|| D::Error::custom(accepted)),
-        serde_json::Value::String(s) => s
-            .trim()
-            .parse::<i64>()
-            .map(Some)
-            .map_err(|_| D::Error::custom(accepted)),
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            trimmed
+                .parse::<i64>()
+                .ok()
+                .or_else(|| {
+                    let coerced = trimmed
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|f| f.is_finite())
+                        .map(f64::trunc);
+                    // Saturating `as`: out-of-range magnitudes saturate to an
+                    // extreme the resolver clamps into 1..=MAX_RESULTS_LIMIT.
+                    #[allow(clippy::cast_possible_truncation)]
+                    let saturated = coerced.map(|t| t as i64);
+                    saturated
+                })
+                .map(Some)
+                .ok_or_else(|| D::Error::custom(accepted))
+        }
         _ => Err(D::Error::custom(accepted)),
     }
 }
@@ -678,8 +715,8 @@ fn resolve_max_results(requested: Option<i64>) -> usize {
 /// items, the pre-cap total, and whether truncation occurred. Centralizing this
 /// keeps the `truncated` flag, the returned length, and the total in sync.
 /// Note: the cap bounds what is *returned*, not what the server computes --
-/// the full query still runs (so an empty workspace-symbol query still scans
-/// the whole index); `max_results` saves model context, not server work.
+/// the full query still runs (so a broad query still scans the whole index);
+/// `max_results` saves model context, not server work.
 fn apply_cap<T>(mut items: Vec<T>, max_results: Option<i64>) -> (Vec<T>, usize, bool) {
     let total = items.len();
     let cap = resolve_max_results(max_results);
@@ -2045,6 +2082,49 @@ mod tests {
         }
     }
 
+    /// The emitted input schema is part of the MCP contract: hosts validate
+    /// against it, so it must accept every shape `de_max_results` coerces.
+    /// Runs normalization like production `list_tools` so the assertion
+    /// covers what hosts actually receive.
+    #[test]
+    fn max_results_input_schema_accepts_coercible_shapes() {
+        fn mentioned_types(value: &serde_json::Value, out: &mut Vec<String>) {
+            if let Some(t) = value.get("type").and_then(|t| t.as_str()) {
+                out.push(t.to_string());
+            }
+            for key in ["anyOf", "oneOf"] {
+                if let Some(items) = value.get(key).and_then(|v| v.as_array()) {
+                    for item in items {
+                        mentioned_types(item, out);
+                    }
+                }
+            }
+        }
+
+        let mut tools = RustAnalyzerTools::tool_router().list_all();
+        for tool in &mut tools {
+            normalize_tool_schemas(tool);
+        }
+        for tool_name in ["rust_find_references", "rust_workspace_symbol"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} missing from router"));
+            let input = serde_json::Value::Object((*tool.input_schema).clone());
+            let max_results = input
+                .pointer("/properties/max_results")
+                .unwrap_or_else(|| panic!("{tool_name} input schema lacks max_results: {input}"));
+            let mut types = Vec::new();
+            mentioned_types(max_results, &mut types);
+            for expected in ["integer", "number", "string"] {
+                assert!(
+                    types.iter().any(|t| t == expected),
+                    "{tool_name} max_results schema must accept {expected}, got types {types:?}: {max_results}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn validate_file_path_rejects_relative() {
         let err = validate_file_path("relative/path.rs").unwrap_err();
@@ -2234,6 +2314,20 @@ mod tests {
         let json = serde_json::json!({ "query": "MyStruct", "max_results": "200" });
         let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
         assert_eq!(param.max_results, Some(200));
+
+        // Fractional numeric strings truncate like JSON floats.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": "2.5" });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(2));
+
+        // Padded strings trim; huge magnitudes clamp downstream.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": "  200  " });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(200));
+        let json =
+            serde_json::json!({ "query": "MyStruct", "max_results": "99999999999999999999" });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(resolve_max_results(param.max_results), 1000);
 
         // Anything else is an invalid-params deserialization error.
         for bad in [
