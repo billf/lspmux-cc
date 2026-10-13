@@ -58,6 +58,18 @@ fn validate_file_path(path: &str) -> Result<(), McpError> {
     Ok(())
 }
 
+/// Reject blank workspace-symbol queries before dispatch: rust-analyzer treats
+/// an empty query as a full-index scan, so fail fast with invalid-params.
+fn validate_workspace_query(query: &str) -> Result<(), McpError> {
+    if query.trim().is_empty() {
+        return Err(McpError::invalid_params(
+            "workspace symbol query must not be blank; pass a narrowed substring",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 fn internal_error(msg: impl Into<String>) -> McpError {
     McpError::internal_error(msg.into(), None)
 }
@@ -156,6 +168,7 @@ pub struct PositionParam {
 #[derive(Deserialize, JsonSchema)]
 pub struct WorkspaceSymbolParam {
     /// Substring to search for in symbol names across the workspace.
+    /// Must not be blank: blank queries are rejected with `invalid_params`; pass a narrowed substring.
     pub query: String,
     /// Maximum number of results to return. Defaults to 200, capped at 1000.
     /// Results beyond the cap are dropped and `truncated` is set.
@@ -649,6 +662,15 @@ fn max_results_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::S
     })
 }
 
+/// Truncate a float toward zero, saturating into `i64`: `trunc()` removes the
+/// fraction, and out-of-range magnitudes saturate to an extreme the resolver
+/// clamps into `1..=MAX_RESULTS_LIMIT`.
+const fn trunc_saturating(f: f64) -> i64 {
+    #[allow(clippy::cast_possible_truncation)]
+    let truncated = f.trunc() as i64;
+    truncated
+}
+
 /// Deserialize `max_results` leniently: JSON integers pass through, floats
 /// truncate toward zero, and numeric strings parse; anything else (bools,
 /// arrays, objects, non-numeric strings) is an invalid-params error naming
@@ -663,14 +685,7 @@ where
         serde_json::Value::Null => Ok(None),
         serde_json::Value::Number(n) => n
             .as_i64()
-            .or_else(|| {
-                let f = n.as_f64()?;
-                // Saturating `as` is exact here: `trunc()` removed the
-                // fraction, and out-of-range magnitudes saturate to an
-                // extreme the resolver clamps into 1..=MAX_RESULTS_LIMIT.
-                #[allow(clippy::cast_possible_truncation)]
-                Some(f.trunc() as i64)
-            })
+            .or_else(|| n.as_f64().map(trunc_saturating))
             .map(Some)
             .ok_or_else(|| D::Error::custom(accepted)),
         serde_json::Value::String(s) => {
@@ -679,16 +694,11 @@ where
                 .parse::<i64>()
                 .ok()
                 .or_else(|| {
-                    let coerced = trimmed
+                    trimmed
                         .parse::<f64>()
                         .ok()
                         .filter(|f| f.is_finite())
-                        .map(f64::trunc);
-                    // Saturating `as`: out-of-range magnitudes saturate to an
-                    // extreme the resolver clamps into 1..=MAX_RESULTS_LIMIT.
-                    #[allow(clippy::cast_possible_truncation)]
-                    let saturated = coerced.map(|t| t as i64);
-                    saturated
+                        .map(trunc_saturating)
                 })
                 .map(Some)
                 .ok_or_else(|| D::Error::custom(accepted))
@@ -727,8 +737,52 @@ fn apply_cap<T>(mut items: Vec<T>, max_results: Option<i64>) -> (Vec<T>, usize, 
     (items, total, truncated)
 }
 
-/// Summary line for `find_references` responses. Extracted (rather than inline)
-/// so the truncated/total wiring is unit-testable without a live server.
+fn build_references_response(
+    p: &ReferencesParam,
+    locations: Vec<LocationRecord>,
+) -> LocationsResponse {
+    let max_results = p.max_results;
+    let (locations, total_count, truncated) = apply_cap(locations, max_results);
+    let found = !locations.is_empty();
+    let location_count = locations.len();
+    let summary = references_summary(location_count, total_count, truncated);
+
+    LocationsResponse {
+        file_path: p.file_path.clone(),
+        requested_position: PositionRecord {
+            line: p.line,
+            character: p.character,
+        },
+        found,
+        location_count,
+        total_count,
+        truncated,
+        locations,
+        summary,
+    }
+}
+
+fn build_workspace_response(
+    query: &str,
+    records: Vec<WorkspaceSymbolRecord>,
+    max_results: Option<i64>,
+) -> WorkspaceSymbolsResponse {
+    let (records, total_count, truncated) = apply_cap(records, max_results);
+    let symbol_count = records.len();
+    let summary = workspace_summary(query, symbol_count, total_count, truncated);
+
+    WorkspaceSymbolsResponse {
+        query: query.to_string(),
+        symbol_count,
+        total_count,
+        truncated,
+        symbols: records,
+        summary,
+    }
+}
+
+/// Summary line for `find_references` responses; kept as a separate fn so the
+/// truncated/total wiring stays unit-testable without a live server.
 fn references_summary(location_count: usize, total_count: usize, truncated: bool) -> String {
     if location_count == 0 {
         "No references found at this position.".to_string()
@@ -752,7 +806,9 @@ fn workspace_summary(
     } else if truncated {
         // A one-character query stays a relevance-free scan at any cap,
         // so skip the raise-max_results hint and point at narrowing.
-        let suggest_more = query.trim().len() >= 2;
+        // Count characters, not bytes: a single multibyte query (e.g. "é")
+        // is still one character.
+        let suggest_more = query.trim().chars().nth(1).is_some();
         truncation_note(
             &format!("symbol(s) matching {query:?}"),
             symbol_count,
@@ -1089,24 +1145,7 @@ impl RustAnalyzerTools {
             .map(|location| location_record(&location.uri, &location.range))
             .collect::<Vec<_>>();
 
-        let (locations, total_count, truncated) = apply_cap(locations, p.max_results);
-        let found = !locations.is_empty();
-        let location_count = locations.len();
-        let summary = references_summary(location_count, total_count, truncated);
-
-        Ok(Json(LocationsResponse {
-            file_path: p.file_path.clone(),
-            requested_position: PositionRecord {
-                line: p.line,
-                character: p.character,
-            },
-            found,
-            location_count,
-            total_count,
-            truncated,
-            locations,
-            summary,
-        }))
+        Ok(Json(build_references_response(p, locations)))
     }
 
     /// Search for symbols by name across the workspace.
@@ -1117,19 +1156,14 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total. Values below 1 clamp to 1. The cap limits returned results only; the full query still runs."
+        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total. Values below 1 clamp to 1. Blank queries are rejected with invalid_params; pass a narrowed substring. The cap limits returned results only; the full query still runs."
     )]
     async fn workspace_symbol(
         &self,
         params: Parameters<WorkspaceSymbolParam>,
     ) -> Result<Json<WorkspaceSymbolsResponse>, McpError> {
         let query = &params.0.query;
-        if query.trim().is_empty() {
-            return Err(McpError::invalid_params(
-                "workspace symbol query must not be blank; pass a narrowed substring",
-                None,
-            ));
-        }
+        validate_workspace_query(query)?;
         let symbols = self
             .lsp
             .workspace_symbols(query.clone())
@@ -1164,18 +1198,11 @@ impl RustAnalyzerTools {
             None => vec![],
         };
 
-        let (records, total_count, truncated) = apply_cap(records, params.0.max_results);
-        let symbol_count = records.len();
-        let summary = workspace_summary(query, symbol_count, total_count, truncated);
-
-        Ok(Json(WorkspaceSymbolsResponse {
-            query: query.clone(),
-            symbol_count,
-            total_count,
-            truncated,
-            symbols: records,
-            summary,
-        }))
+        Ok(Json(build_workspace_response(
+            query,
+            records,
+            params.0.max_results,
+        )))
     }
 
     /// Return server health and configuration status.
@@ -2116,7 +2143,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{tool_name} input schema lacks max_results: {input}"));
             let mut types = Vec::new();
             mentioned_types(max_results, &mut types);
-            for expected in ["integer", "number", "string"] {
+            for expected in ["integer", "number", "string", "null"] {
                 assert!(
                     types.iter().any(|t| t == expected),
                     "{tool_name} max_results schema must accept {expected}, got types {types:?}: {max_results}"
@@ -2129,6 +2156,22 @@ mod tests {
     fn validate_file_path_rejects_relative() {
         let err = validate_file_path("relative/path.rs").unwrap_err();
         assert!(err.message.contains("must be absolute"));
+    }
+
+    #[test]
+    fn validate_workspace_query_rejects_blank() {
+        assert!(validate_workspace_query("MyStruct").is_ok());
+        // Padding around real content trims clean.
+        assert!(validate_workspace_query("  padded  ").is_ok());
+        for blank in ["", "   ", "\n\t "] {
+            let err = validate_workspace_query(blank).unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(
+                err.message.contains("must not be blank"),
+                "blank query must name the rule, got: {}",
+                err.message
+            );
+        }
     }
 
     #[test]
@@ -2171,6 +2214,13 @@ mod tests {
         let json = serde_json::json!({ "query": "MyStruct", "max_results": 25 });
         let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
         assert_eq!(param.max_results, Some(25));
+
+        // Explicit null takes the Null arm (not just serde default) and
+        // resolves to the default cap downstream.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": null });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, None);
+        assert_eq!(resolve_max_results(param.max_results), DEFAULT_MAX_RESULTS);
     }
 
     #[test]
@@ -2239,6 +2289,51 @@ mod tests {
     }
 
     #[test]
+    fn list_response_builders_keep_counts_and_summaries_in_sync() {
+        let location = location_record(
+            &file_uri("/tmp/test.rs").unwrap(),
+            &lsp_types::Range::default(),
+        );
+        for (total, cap) in [(0, 2), (1, 2), (2, 2), (3, 2), (250, 200), (1500, 1000)] {
+            let p = ReferencesParam {
+                file_path: "/tmp/test.rs".into(),
+                line: 0,
+                character: 0,
+                max_results: Some(cap),
+            };
+            let refs = build_references_response(&p, vec![location.clone(); total]);
+            let symbols = build_workspace_response(
+                "Test",
+                vec![
+                    WorkspaceSymbolRecord {
+                        name: "Test".into(),
+                        kind: "Struct".into(),
+                        container_name: None,
+                        location: location.clone(),
+                    };
+                    total
+                ],
+                Some(cap),
+            );
+            let kept = total.min(usize::try_from(cap).unwrap());
+            assert_eq!(refs.locations.len(), kept);
+            assert_eq!(refs.location_count, kept);
+            assert_eq!(refs.found, kept > 0);
+            assert_eq!(symbols.symbols.len(), kept);
+            assert_eq!(symbols.symbol_count, kept);
+            for (count, truncated, summary) in [
+                (refs.total_count, refs.truncated, refs.summary),
+                (symbols.total_count, symbols.truncated, symbols.summary),
+            ] {
+                assert_eq!(count, total);
+                assert_eq!(truncated, total > kept);
+                assert_eq!(summary.starts_with("Truncated"), truncated);
+                assert!(summary.contains(&total.to_string()) || total == 0);
+            }
+        }
+    }
+
+    #[test]
     fn truncation_note_covers_both_legs() {
         let below = truncation_note("reference(s)", 200, 250, true);
         assert!(below.starts_with("Truncated"));
@@ -2293,6 +2388,10 @@ mod tests {
         let short = workspace_summary("x", 50, 300, true);
         assert!(!short.contains("larger max_results"));
         assert!(short.contains("Narrow the query"));
+        // A single multibyte character is still one character: no cap hint.
+        let multibyte = workspace_summary("é", 50, 300, true);
+        assert!(!multibyte.contains("larger max_results"));
+        assert!(multibyte.contains("Narrow the query"));
     }
 
     #[test]
@@ -2330,16 +2429,40 @@ mod tests {
         assert_eq!(resolve_max_results(param.max_results), 1000);
 
         // Anything else is an invalid-params deserialization error.
+        // Non-finite spellings parse as f64 but are rejected by the
+        // finiteness filter ("NaN".parse::<f64>() succeeds in Rust).
         for bad in [
             serde_json::json!({ "query": "MyStruct", "max_results": true }),
             serde_json::json!({ "query": "MyStruct", "max_results": "many" }),
             serde_json::json!({ "query": "MyStruct", "max_results": [10] }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "NaN" }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "inf" }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "-inf" }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "Infinity" }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "1e9999" }),
         ] {
             assert!(
                 serde_json::from_value::<WorkspaceSymbolParam>(bad).is_err(),
                 "non-numeric max_results must fail deserialization"
             );
         }
+    }
+
+    #[test]
+    fn extreme_magnitude_max_results_saturate_into_clamp() {
+        // Beyond i64::MAX the JSON number arrives as u64/f64, truncates and
+        // saturates to i64::MAX, then clamps to the hard cap.
+        let param: WorkspaceSymbolParam =
+            serde_json::from_str(r#"{"query":"M","max_results":9223372036854775808}"#).unwrap();
+        assert_eq!(resolve_max_results(param.max_results), MAX_RESULTS_LIMIT);
+        // Beyond i64::MIN saturates the other way and clamps up to 1.
+        let param: WorkspaceSymbolParam =
+            serde_json::from_str(r#"{"query":"M","max_results":-9223372036854775809}"#).unwrap();
+        assert_eq!(resolve_max_results(param.max_results), 1);
+        // Huge finite floats saturate identically.
+        let param: WorkspaceSymbolParam =
+            serde_json::from_str(r#"{"query":"M","max_results":1e100}"#).unwrap();
+        assert_eq!(resolve_max_results(param.max_results), MAX_RESULTS_LIMIT);
     }
 
     #[test]

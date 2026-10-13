@@ -427,10 +427,9 @@ impl LspClient {
                 return Ok(());
             }
             // Content changed — send didChange with updated content.
-            *version += 1;
-            *prev_hash = content_hash;
-            let v = *version;
-            drop(opened);
+            let v = *version + 1;
+            // Keep synchronization serialized and commit only after a successful
+            // write. Failed notifications must remain eligible for retry.
 
             self.notify(
                 "textDocument/didChange",
@@ -443,11 +442,11 @@ impl LspClient {
                     }],
                 },
             )
-            .await
+            .await?;
+            *version = v;
+            *prev_hash = content_hash;
         } else {
             // First access — send didOpen.
-            opened.insert(file_path.to_string(), (0, content_hash));
-            drop(opened);
 
             self.notify(
                 "textDocument/didOpen",
@@ -460,8 +459,11 @@ impl LspClient {
                     },
                 },
             )
-            .await
+            .await?;
+            opened.insert(file_path.to_string(), (0, content_hash));
         }
+        drop(opened);
+        Ok(())
     }
 
     /// Whether the LSP child process is still alive.
@@ -1017,7 +1019,11 @@ mod tests {
     async fn ensure_file_open_missing_file_returns_path_error() {
         let client = cat_fixture_client(true);
 
-        let missing = std::env::temp_dir().join("lspmux_ensure_open_missing.rs");
+        // Join the missing name inside a fresh tempdir so absence is
+        // structural: a leftover file at a fixed shared path would flip
+        // expect_err into a panic.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("lspmux_ensure_open_missing.rs");
         let missing_str = missing.to_str().unwrap();
         let err = client
             .ensure_file_open(missing_str)
@@ -1066,6 +1072,31 @@ mod tests {
             "notify failure surfaces the sync error, got: {err}"
         );
 
+        kill_fixture_client(&client).await;
+    }
+
+    #[tokio::test]
+    async fn failed_file_notifications_preserve_retry_state() {
+        let client = cat_fixture_client(true);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        std::fs::write(file.path(), "fn a() {}\n").unwrap();
+        client.alive.store(false, Ordering::Release);
+        assert!(client.ensure_file_open(path).await.is_err());
+        assert!(!client.opened_files.lock().await.contains_key(path));
+        client.alive.store(true, Ordering::Release);
+        client.ensure_file_open(path).await.unwrap();
+        let original = client.opened_files.lock().await[path];
+        std::fs::write(file.path(), "fn b() {}\n").unwrap();
+        client.alive.store(false, Ordering::Release);
+        for _ in 0..2 {
+            assert!(client.ensure_file_open(path).await.is_err());
+            assert_eq!(client.opened_files.lock().await[path], original);
+        }
+        client.alive.store(true, Ordering::Release);
+        client.ensure_file_open(path).await.unwrap();
+        assert_eq!(client.opened_files.lock().await[path].0, original.0 + 1);
+        assert_ne!(client.opened_files.lock().await[path].1, original.1);
         kill_fixture_client(&client).await;
     }
 

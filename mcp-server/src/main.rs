@@ -65,7 +65,8 @@ impl ServerHandler for LspmuxMcpServer {
                  at `max_results` (default 200, hard cap 1000); responses always carry \
                  `truncated`/`total_count`, and the cap bounds returned results only, not \
                  server work. Below the hard cap raise `max_results`; at the hard cap \
-                 narrow the query.",
+                 narrow the query. `rust_workspace_symbol` rejects blank queries \
+                 with `invalid_params`; pass a narrowed substring.",
             )
     }
 

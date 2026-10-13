@@ -29,7 +29,7 @@ rust_find_references(file_path: "/absolute/path/to/file.rs", line: 10, character
 ```
 
 ### `rust_workspace_symbol`
-Search for symbols (functions, structs, traits, etc.) by name across the entire workspace. Results cap at `max_results` (default 200, hard cap 1000); `truncated`/`total_count` report capping.
+Search for symbols (functions, structs, traits, etc.) by name across the entire workspace. Results cap at `max_results` (default 200, hard cap 1000); `truncated`/`total_count` report capping. Blank queries are rejected with `invalid_params`; pass a narrowed substring.
 ```
 rust_workspace_symbol(query: "MyStruct")
 ```
