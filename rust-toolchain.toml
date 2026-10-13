@@ -6,4 +6,4 @@
 # pick stays ABI-compatible with the compiled dylibs. When the flake's
 # nixpkgs rev bumps rustc, bump this pin to match (see docs/binary-resolution.md).
 # CI is unaffected: it invokes `cargo +stable` explicitly.
-channel = "1.97.1"
+channel = "1.98.1"

@@ -42,4 +42,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes shellcheck
 
       - name: Lint shell scripts
-        run: shellcheck setup bin/* hooks/scripts/*.sh
+        run: shellcheck setup bin/* hooks/scripts/*.sh scripts/*.sh tests/*.sh

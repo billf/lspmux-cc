@@ -29,3 +29,32 @@ probe is only degraded observability: it does not reject the selected binary.
 
 There is no SHA256 downloader, automatic updater, or implicit replacement of a
 user-selected rust-analyzer binary.
+
+## Toolchain pin and proc-macro servers
+
+`rust-toolchain.toml` pins one interactive toolchain (currently the same
+rustc the flake's nixpkgs provides, so `nix develop`, crane builds, and
+rustup-shim shells agree). rust-analyzer builds workspace metadata with the
+cargo from its own environment: when that toolchain disagrees with whatever
+built `target/`, every check rebuilds proc-macro dylibs under a different
+rustc, and its proc-macro server — which enforces an exact rustc-version
+match against the dylib — refuses to load them. The symptom is a
+`macro-error` diagnostic (e.g. an unexpanded `#[tokio::main]`) cascading
+into phantom syntax errors.
+
+`./scripts/assert-toolchain.sh` compares the ambient rustc sysroot for identity
+against the pin plus the ambient cargo release train. Inside a Nix shell,
+Nix-store rustc must match the pinned version and cargo release train; stale
+shells fail with a hint to exit and re-enter `nix develop`. The `just` build/test
+recipes run it first and `./setup doctor` reports agreement.
+When the flake's nixpkgs rev bumps rustc, bump the pin to match — CI is
+unaffected (it invokes `cargo +stable` explicitly).
+
+Recovery: a `macro-error` diagnostic names the exact rustc versions
+involved (`expected` = the server's, `found` = the dylib's). If either
+predates the pin, a stale rust-analyzer generation is serving the
+workspace: rebuild with the pinned toolchain, then restart that
+rust-analyzer instance (kill its PID; lspmux respawns it on the next
+request) so it spawns the proc-macro server from the current sysroot.
+Stale per-workspace servers from other sessions exit with their owners;
+never kill processes you don't own.
