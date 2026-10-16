@@ -23,13 +23,13 @@ rust_goto_definition(file_path: "/absolute/path/to/file.rs", line: 10, character
 ```
 
 ### `rust_find_references`
-Find all references to a symbol.
+Find all references to a symbol. Results cap at `max_results` (default 200, hard cap 1000); `truncated`/`total_count` report capping.
 ```
 rust_find_references(file_path: "/absolute/path/to/file.rs", line: 10, character: 5)
 ```
 
 ### `rust_workspace_symbol`
-Search for symbols (functions, structs, traits, etc.) by name across the entire workspace.
+Search for symbols (functions, structs, traits, etc.) by name across the entire workspace. Results cap at `max_results` (default 200, hard cap 1000); `truncated`/`total_count` report capping.
 ```
 rust_workspace_symbol(query: "MyStruct")
 ```
