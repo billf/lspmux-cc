@@ -26,23 +26,22 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 /// Find the line number (0-indexed) of a pattern in a file.
-#[allow(clippy::cast_possible_truncation)]
 fn find_line(path: &Path, pattern: &str) -> Option<u32> {
     let content = std::fs::read_to_string(path).ok()?;
     content
         .lines()
         .position(|l| l.contains(pattern))
-        .map(|n| n as u32)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 /// Find the column (0-indexed) where `needle` starts within the first line matching `pattern`.
-#[allow(clippy::cast_possible_truncation)]
 fn find_column(path: &Path, pattern: &str, needle: &str) -> Option<u32> {
     let content = std::fs::read_to_string(path).ok()?;
     content
         .lines()
         .find(|l| l.contains(pattern))
-        .and_then(|line| line.find(needle).map(|c| c as u32))
+        .and_then(|line| line.find(needle))
+        .and_then(|c| u32::try_from(c).ok())
 }
 
 /// Check if a binary exists on PATH.

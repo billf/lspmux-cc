@@ -62,6 +62,16 @@ fn internal_error(msg: impl Into<String>) -> McpError {
     McpError::internal_error(msg.into(), None)
 }
 
+/// Build the error for a failed LSP request. A failure here is often transient
+/// (rust-analyzer still indexing), so the message tells the model to check
+/// `rust_server_status` and retry rather than treat the operation as fatal.
+fn lsp_request_error(operation: &str, error: &impl std::fmt::Display) -> McpError {
+    internal_error(format!(
+        "{operation} failed: {error}. If rust-analyzer may still be indexing, \
+         check rust_server_status and retry; otherwise verify that the input parameters are valid."
+    ))
+}
+
 const fn diagnostic_severity_name(severity: Option<lsp_types::DiagnosticSeverity>) -> &'static str {
     match severity {
         Some(lsp_types::DiagnosticSeverity::ERROR) => "error",
@@ -147,6 +157,34 @@ pub struct PositionParam {
 pub struct WorkspaceSymbolParam {
     /// Substring to search for in symbol names across the workspace.
     pub query: String,
+    /// Maximum number of results to return. Defaults to 200, capped at 1000.
+    /// Results beyond the cap are dropped and `truncated` is set.
+    /// Values below 1 (including negatives) are clamped to 1.
+    /// Accepts integers, floats (truncated toward zero), and numeric strings.
+    #[serde(default, deserialize_with = "de_max_results")]
+    pub max_results: Option<i64>,
+}
+
+/// Tool parameters: file path + position + an optional result cap.
+///
+/// Deliberately separate from `PositionParam` rather than adding `max_results`
+/// there: the other position tools (hover, goto, call hierarchy, expand-macro)
+/// do not cap their output, so adding the field to the shared struct would
+/// advertise a parameter those tools ignore.
+#[derive(Deserialize, JsonSchema)]
+pub struct ReferencesParam {
+    /// Absolute path to the Rust source file.
+    pub file_path: String,
+    /// Zero-based line number.
+    pub line: u32,
+    /// Zero-based character offset.
+    pub character: u32,
+    /// Maximum number of results to return. Defaults to 200, capped at 1000.
+    /// Results beyond the cap are dropped and `truncated` is set.
+    /// Values below 1 (including negatives) are clamped to 1.
+    /// Accepts integers, floats (truncated toward zero), and numeric strings.
+    #[serde(default, deserialize_with = "de_max_results")]
+    pub max_results: Option<i64>,
 }
 
 /// Empty parameter struct for tools that take no arguments.
@@ -236,7 +274,13 @@ pub struct LocationsResponse {
     pub file_path: String,
     pub requested_position: PositionRecord,
     pub found: bool,
+    /// Number of results returned, after any `max_results` cap.
     pub location_count: usize,
+    /// Total results available before the `max_results` cap. Equal to
+    /// `location_count` unless `truncated` is true.
+    pub total_count: usize,
+    /// True when results were capped by `max_results` and some were dropped.
+    pub truncated: bool,
     pub locations: Vec<LocationRecord>,
     pub summary: String,
 }
@@ -253,6 +297,11 @@ pub struct WorkspaceSymbolRecord {
 pub struct WorkspaceSymbolsResponse {
     pub query: String,
     pub symbol_count: usize,
+    /// Total matches available before the `max_results` cap. Equal to
+    /// `symbol_count` unless `truncated` is true.
+    pub total_count: usize,
+    /// True when results were capped by `max_results` and some were dropped.
+    pub truncated: bool,
     pub symbols: Vec<WorkspaceSymbolRecord>,
     pub summary: String,
 }
@@ -571,6 +620,136 @@ fn code_action_record(item: lsp_types::CodeActionOrCommand) -> CodeActionRecord 
 /// so a degenerate tree can't overflow the stack and crash the server.
 const MAX_SYMBOL_DEPTH: usize = 64;
 
+/// Default cap on results returned by the list-style tools
+/// (`rust_find_references`, `rust_workspace_symbol`) when the caller does not
+/// pass `max_results`. Keeps a broad query from flooding the model's context.
+const DEFAULT_MAX_RESULTS: usize = 200;
+/// Hard upper bound on `max_results`; larger requests are clamped to this.
+const MAX_RESULTS_LIMIT: usize = 1000;
+
+/// Deserialize `max_results` leniently: JSON integers pass through, floats
+/// truncate toward zero, and numeric strings parse; anything else (bools,
+/// arrays, objects, non-numeric strings) is an invalid-params error naming
+/// the accepted shapes. Missing or null means "no preference" (default cap).
+fn de_max_results<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let accepted = "max_results must be an integer, a float, or a numeric string";
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| {
+                let f = n.as_f64()?;
+                // Saturating `as` is exact here: `trunc()` removed the
+                // fraction, and out-of-range magnitudes saturate to an
+                // extreme the resolver clamps into 1..=MAX_RESULTS_LIMIT.
+                #[allow(clippy::cast_possible_truncation)]
+                Some(f.trunc() as i64)
+            })
+            .map(Some)
+            .ok_or_else(|| D::Error::custom(accepted)),
+        serde_json::Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| D::Error::custom(accepted)),
+        _ => Err(D::Error::custom(accepted)),
+    }
+}
+
+/// Resolve a caller-supplied `max_results` into an effective cap: apply the
+/// default when unset, and clamp any value to `1..=MAX_RESULTS_LIMIT`.
+/// `i64` (not `u32`) so out-of-range JSON (negatives, floats-as-ints) reaches
+/// the clamp instead of failing deserialization before it.
+fn resolve_max_results(requested: Option<i64>) -> usize {
+    // Both fallbacks are unreachable in practice: the limit constant fits
+    // easily, and the clamp keeps `n` positive -- they exist only because
+    // `try_from` (which clippy pedantic requires over `as` casts) is partial.
+    requested.map_or(DEFAULT_MAX_RESULTS, |n| {
+        let limit = i64::try_from(MAX_RESULTS_LIMIT).unwrap_or(i64::MAX);
+        usize::try_from(n.clamp(1, limit)).unwrap_or(MAX_RESULTS_LIMIT)
+    })
+}
+
+/// Apply the resolved result cap to a list, returning the (possibly truncated)
+/// items, the pre-cap total, and whether truncation occurred. Centralizing this
+/// keeps the `truncated` flag, the returned length, and the total in sync.
+/// Note: the cap bounds what is *returned*, not what the server computes --
+/// the full query still runs (so an empty workspace-symbol query still scans
+/// the whole index); `max_results` saves model context, not server work.
+fn apply_cap<T>(mut items: Vec<T>, max_results: Option<i64>) -> (Vec<T>, usize, bool) {
+    let total = items.len();
+    let cap = resolve_max_results(max_results);
+    let truncated = total > cap;
+    if truncated {
+        items.truncate(cap);
+    }
+    (items, total, truncated)
+}
+
+/// Summary line for `find_references` responses. Extracted (rather than inline)
+/// so the truncated/total wiring is unit-testable without a live server.
+fn references_summary(location_count: usize, total_count: usize, truncated: bool) -> String {
+    if location_count == 0 {
+        "No references found at this position.".to_string()
+    } else if truncated {
+        truncation_note("reference(s)", location_count, total_count, true)
+    } else {
+        format!("Found {location_count} reference(s).")
+    }
+}
+
+/// Summary line for `workspace_symbol` responses. `suggest_more` follows the
+/// query length: a one-character scan stays arbitrary at any cap.
+fn workspace_summary(
+    query: &str,
+    symbol_count: usize,
+    total_count: usize,
+    truncated: bool,
+) -> String {
+    if symbol_count == 0 {
+        format!("No symbols found matching {query:?}.")
+    } else if truncated {
+        // A one-character query stays a relevance-free scan at any cap,
+        // so skip the raise-max_results hint and point at narrowing.
+        let suggest_more = query.trim().len() >= 2;
+        truncation_note(
+            &format!("symbol(s) matching {query:?}"),
+            symbol_count,
+            total_count,
+            suggest_more,
+        )
+    } else {
+        format!("Found {symbol_count} symbol(s) matching {query:?}.")
+    }
+}
+/// Summary line for a truncated list result. Leads with "Truncated" so an agent
+/// reading only the summary still sees it, and stops suggesting a larger
+/// `max_results` once the hard cap is already hit. `suggest_more` selects the
+/// cap-walk hint; pass false when the query is too short for a larger cap to
+/// help (a one-character prefix scan stays arbitrary at any cap).
+fn truncation_note(noun: &str, returned: usize, total: usize, suggest_more: bool) -> String {
+    if returned >= MAX_RESULTS_LIMIT {
+        format!(
+            "Truncated: showing the first {returned} of {total} {noun}. This is the \
+             {MAX_RESULTS_LIMIT}-result hard cap; narrow the query to see the rest."
+        )
+    } else if suggest_more {
+        format!(
+            "Truncated: showing the first {returned} of {total} {noun}. Pass a larger \
+             max_results (up to {MAX_RESULTS_LIMIT}) to see more."
+        )
+    } else {
+        format!(
+            "Truncated: showing the first {returned} of {total} {noun}. Narrow the \
+             query to see more."
+        )
+    }
+}
+
 fn document_symbol_record(symbol: lsp_types::DocumentSymbol) -> DocumentSymbolRecord {
     fn to_record(symbol: lsp_types::DocumentSymbol, depth: usize) -> DocumentSymbolRecord {
         let children = if depth >= MAX_SYMBOL_DEPTH {
@@ -695,11 +874,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<lsp_types::request::DocumentDiagnosticRequest>(diag_params)
             .await
-            .map_err(|e| {
-                internal_error(format!(
-                    "diagnostics request failed: {e}. rust-analyzer may still be indexing"
-                ))
-            })?;
+            .map_err(|e| lsp_request_error("diagnostics request", &e))?;
 
         let items = match report {
             lsp_types::DocumentDiagnosticReportResult::Report(
@@ -766,7 +941,7 @@ impl RustAnalyzerTools {
             .lsp
             .hover(&p.file_path, p.line, p.character)
             .await
-            .map_err(|e| internal_error(format!("hover request failed: {e}")))?;
+            .map_err(|e| lsp_request_error("hover request", &e))?;
 
         match hover {
             Some(hover) => {
@@ -817,7 +992,7 @@ impl RustAnalyzerTools {
             .lsp
             .goto_definition(&p.file_path, p.line, p.character)
             .await
-            .map_err(|e| internal_error(format!("go to definition failed: {e}")))?;
+            .map_err(|e| lsp_request_error("go to definition", &e))?;
 
         let locations = locations_from_goto_response(response);
 
@@ -837,6 +1012,9 @@ impl RustAnalyzerTools {
             },
             found,
             location_count,
+            // Not a list tool: definition/implementation results are never capped.
+            total_count: location_count,
+            truncated: false,
             locations,
             summary,
         }))
@@ -850,11 +1028,11 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Find all references to a symbol at a specific position. Returns one-based file locations."
+        description = "Find all references to a symbol at a specific position. Returns one-based file locations. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total. Values below 1 clamp to 1. The cap limits returned results only; the full query still runs."
     )]
     async fn find_references(
         &self,
-        params: Parameters<PositionParam>,
+        params: Parameters<ReferencesParam>,
     ) -> Result<Json<LocationsResponse>, McpError> {
         let p = &params.0;
         validate_file_path(&p.file_path)?;
@@ -868,19 +1046,16 @@ impl RustAnalyzerTools {
             .lsp
             .find_references(&p.file_path, p.line, p.character)
             .await
-            .map_err(|e| internal_error(format!("find references failed: {e}")))?
+            .map_err(|e| lsp_request_error("find references", &e))?
             .unwrap_or_default()
             .into_iter()
             .map(|location| location_record(&location.uri, &location.range))
             .collect::<Vec<_>>();
 
+        let (locations, total_count, truncated) = apply_cap(locations, p.max_results);
         let found = !locations.is_empty();
         let location_count = locations.len();
-        let summary = if found {
-            format!("Found {location_count} reference(s).")
-        } else {
-            "No references found at this position.".to_string()
-        };
+        let summary = references_summary(location_count, total_count, truncated);
 
         Ok(Json(LocationsResponse {
             file_path: p.file_path.clone(),
@@ -890,6 +1065,8 @@ impl RustAnalyzerTools {
             },
             found,
             location_count,
+            total_count,
+            truncated,
             locations,
             summary,
         }))
@@ -903,18 +1080,24 @@ impl RustAnalyzerTools {
             read_only_hint = true,
             open_world_hint = false
         ),
-        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds."
+        description = "Search for symbols by name across the entire workspace. Returns one-based locations and normalized symbol kinds. Capped at max_results (default 200, hard cap 1000); when the cap applies, `truncated` is true and the summary reports the full total. Values below 1 clamp to 1. The cap limits returned results only; the full query still runs."
     )]
     async fn workspace_symbol(
         &self,
         params: Parameters<WorkspaceSymbolParam>,
     ) -> Result<Json<WorkspaceSymbolsResponse>, McpError> {
         let query = &params.0.query;
+        if query.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "workspace symbol query must not be blank; pass a narrowed substring",
+                None,
+            ));
+        }
         let symbols = self
             .lsp
             .workspace_symbols(query.clone())
             .await
-            .map_err(|e| internal_error(format!("workspace symbol search failed: {e}")))?;
+            .map_err(|e| lsp_request_error("workspace symbol search", &e))?;
 
         let records = match symbols {
             Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols)) => symbols
@@ -944,16 +1127,15 @@ impl RustAnalyzerTools {
             None => vec![],
         };
 
+        let (records, total_count, truncated) = apply_cap(records, params.0.max_results);
         let symbol_count = records.len();
-        let summary = if symbol_count == 0 {
-            format!("No symbols found matching {query:?}.")
-        } else {
-            format!("Found {symbol_count} symbol(s) matching {query:?}.")
-        };
+        let summary = workspace_summary(query, symbol_count, total_count, truncated);
 
         Ok(Json(WorkspaceSymbolsResponse {
             query: query.clone(),
             symbol_count,
+            total_count,
+            truncated,
             symbols: records,
             summary,
         }))
@@ -1117,7 +1299,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<lsp_types::request::CodeActionRequest>(action_params)
             .await
-            .map_err(|e| internal_error(format!("code action request failed: {e}")))?;
+            .map_err(|e| lsp_request_error("code action request", &e))?;
 
         let actions = response
             .unwrap_or_default()
@@ -1178,7 +1360,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<lsp_types::request::DocumentSymbolRequest>(symbol_params)
             .await
-            .map_err(|e| internal_error(format!("document symbol request failed: {e}")))?;
+            .map_err(|e| lsp_request_error("document symbol request", &e))?;
 
         let symbols = match response {
             Some(lsp_types::DocumentSymbolResponse::Nested(symbols)) => {
@@ -1240,7 +1422,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<lsp_types::request::Rename>(rename_params)
             .await
-            .map_err(|e| internal_error(format!("rename request failed: {e}")))?;
+            .map_err(|e| lsp_request_error("rename request", &e))?;
 
         let edit = response.as_ref().map(workspace_edit_record);
         let found = edit.as_ref().is_some_and(|e| e.file_count > 0);
@@ -1294,7 +1476,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<lsp_types::request::GotoImplementation>(impl_params)
             .await
-            .map_err(|e| internal_error(format!("go to implementation failed: {e}")))?;
+            .map_err(|e| lsp_request_error("go to implementation", &e))?;
 
         let locations = locations_from_goto_response(response);
 
@@ -1314,6 +1496,9 @@ impl RustAnalyzerTools {
             },
             found,
             location_count,
+            // Not a list tool: definition/implementation results are never capped.
+            total_count: location_count,
+            truncated: false,
             locations,
             summary,
         }))
@@ -1348,7 +1533,7 @@ impl RustAnalyzerTools {
                 self.lsp
                     .request::<lsp_types::request::CallHierarchyIncomingCalls>(call_params)
                     .await
-                    .map_err(|e| internal_error(format!("incoming calls request failed: {e}")))?
+                    .map_err(|e| lsp_request_error("incoming calls request", &e))?
                     .unwrap_or_default()
                     .into_iter()
                     .map(|call| CallHierarchyCallRecord {
@@ -1394,7 +1579,7 @@ impl RustAnalyzerTools {
                 self.lsp
                     .request::<lsp_types::request::CallHierarchyOutgoingCalls>(call_params)
                     .await
-                    .map_err(|e| internal_error(format!("outgoing calls request failed: {e}")))?
+                    .map_err(|e| lsp_request_error("outgoing calls request", &e))?
                     .unwrap_or_default()
                     .into_iter()
                     .map(|call| CallHierarchyCallRecord {
@@ -1436,7 +1621,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<ExpandMacro>(expand_params)
             .await
-            .map_err(|e| internal_error(format!("expand macro request failed: {e}")))?;
+            .map_err(|e| lsp_request_error("expand macro request", &e))?;
 
         let requested_position = PositionRecord {
             line: p.line,
@@ -1496,7 +1681,7 @@ impl RustAnalyzerTools {
             .lsp
             .request::<lsp_types::request::CallHierarchyPrepare>(prepare_params)
             .await
-            .map_err(|e| internal_error(format!("prepare call hierarchy failed: {e}")))?;
+            .map_err(|e| lsp_request_error("prepare call hierarchy", &e))?;
 
         Ok(items.and_then(|mut items| (!items.is_empty()).then(|| items.remove(0))))
     }
@@ -1757,10 +1942,11 @@ mod tests {
     use super::*;
 
     /// Every `rust_*` tool must advertise itself as read-only and
-    /// workspace-scoped with a human-readable title. Pins the R1 annotations so
-    /// a future edit or rmcp upgrade cannot silently drop or flip them.
+    /// workspace-scoped with a human-readable title, and expose an output
+    /// schema. Pins the R1 annotations and the rmcp-derived output schema so a
+    /// future edit or rmcp upgrade cannot silently drop or flip them.
     #[test]
-    fn tool_annotations_are_read_only_and_titled() {
+    fn tool_metadata_is_complete() {
         let tools = [
             (
                 RustAnalyzerTools::diagnostics_tool_attr(),
@@ -1816,8 +2002,28 @@ mod tests {
 
         assert_eq!(tools.len(), 14, "all tools must be covered by this test");
 
+        // Drive the count from the live router: a 15th auto-registered tool
+        // must fail here instead of passing 14==14 on the hand-built array.
+        let router_names: std::collections::BTreeSet<String> = RustAnalyzerTools::tool_router()
+            .list_all()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        let attr_names: std::collections::BTreeSet<String> = tools
+            .iter()
+            .map(|(tool, _)| tool.name.to_string())
+            .collect();
+        assert_eq!(
+            router_names, attr_names,
+            "live router tools must match the pinned metadata array"
+        );
+
         for (tool, expected_title) in tools {
             let name = tool.name.clone();
+            assert!(
+                tool.output_schema.is_some(),
+                "{name} must expose an output schema (rmcp derives it from Json<T>)"
+            );
             let annotations = tool
                 .annotations
                 .unwrap_or_else(|| panic!("{name} is missing tool annotations"));
@@ -1880,6 +2086,183 @@ mod tests {
         let json = serde_json::json!({ "query": "MyStruct" });
         let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
         assert_eq!(param.query, "MyStruct");
+        assert_eq!(param.max_results, None, "max_results is optional");
+
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": 25 });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(25));
+    }
+
+    #[test]
+    fn resolve_max_results_applies_default_and_clamps() {
+        assert_eq!(resolve_max_results(None), DEFAULT_MAX_RESULTS);
+        assert_eq!(resolve_max_results(Some(50)), 50);
+        assert_eq!(resolve_max_results(Some(0)), 1, "zero clamps up to 1");
+        assert_eq!(
+            resolve_max_results(Some(-1)),
+            1,
+            "negatives clamp up to 1 instead of failing"
+        );
+        assert_eq!(resolve_max_results(Some(1)), 1, "inclusive lower bound");
+        assert_eq!(
+            resolve_max_results(Some(1000)),
+            1000,
+            "inclusive upper bound"
+        );
+        assert_eq!(
+            resolve_max_results(Some(1001)),
+            MAX_RESULTS_LIMIT,
+            "just over the cap clamps down"
+        );
+        assert_eq!(
+            resolve_max_results(Some(100_000)),
+            MAX_RESULTS_LIMIT,
+            "oversized requests clamp to the hard cap"
+        );
+    }
+
+    #[test]
+    fn apply_cap_truncates_and_reports_total() {
+        // Under the cap: nothing dropped, total equals the returned length.
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3], Some(10));
+        assert_eq!(items, vec![1, 2, 3]);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+
+        // Exactly at the cap: not truncated (cap is inclusive).
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3], Some(3));
+        assert_eq!(items.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+
+        // Over the cap: kept down to the cap, total preserves the pre-cap count.
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3, 4, 5], Some(2));
+        assert_eq!(items, vec![1, 2]);
+        assert_eq!(total, 5);
+        assert!(truncated);
+
+        // Unset (the production default): truncates at 200, total is exact.
+        let big: Vec<u32> = (0..250).collect();
+        let (items, total, truncated) = apply_cap(big, None);
+        assert_eq!(items.len(), DEFAULT_MAX_RESULTS);
+        assert_eq!(total, 250);
+        assert!(truncated);
+
+        // Degenerate inputs compose through the same clamp.
+        let (items, _, truncated) = apply_cap(vec![1, 2, 3], Some(0));
+        assert_eq!(items.len(), 1);
+        assert!(truncated);
+        let (items, total, truncated) = apply_cap(vec![1, 2, 3], Some(100_000));
+        assert_eq!(items.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncation_note_covers_both_legs() {
+        let below = truncation_note("reference(s)", 200, 250, true);
+        assert!(below.starts_with("Truncated"));
+        assert!(below.contains("250"));
+        assert!(below.contains("larger max_results"));
+
+        let capped = truncation_note("reference(s)", 1000, 1500, true);
+        assert!(capped.contains("hard cap"));
+        assert!(capped.contains("narrow the query"));
+
+        // Short queries skip the raise-max_results hint: a larger cap
+        // cannot help a relevance-free scan.
+        let short = truncation_note("symbol(s) matching \"x\"", 50, 300, false);
+        assert!(short.starts_with("Truncated"));
+        assert!(!short.contains("larger max_results"));
+        assert!(short.contains("Narrow the query"));
+    }
+
+    #[test]
+    fn lsp_request_error_names_operation_and_hints_retry() {
+        let err = lsp_request_error("hover", &anyhow::anyhow!("boom")).to_string();
+        assert!(err.contains("hover"), "names the operation, got: {err}");
+        assert!(
+            err.contains("rust_server_status"),
+            "keeps the retry hint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn summary_builders_wire_truncation_totals_and_hints() {
+        // References: empty, plain, and truncated shapes.
+        assert_eq!(
+            references_summary(0, 0, false),
+            "No references found at this position."
+        );
+        assert_eq!(references_summary(3, 3, false), "Found 3 reference(s).");
+        let truncated = references_summary(200, 250, true);
+        assert!(truncated.starts_with("Truncated"));
+        assert!(truncated.contains("250"));
+
+        // Workspace: empty, plain, truncated with and without the cap hint.
+        assert_eq!(
+            workspace_summary("Foo", 0, 0, false),
+            "No symbols found matching \"Foo\"."
+        );
+        assert_eq!(
+            workspace_summary("Foo", 2, 2, false),
+            "Found 2 symbol(s) matching \"Foo\"."
+        );
+        let capped = workspace_summary("Foo", 200, 500, true);
+        assert!(capped.contains("larger max_results"));
+        let short = workspace_summary("x", 50, 300, true);
+        assert!(!short.contains("larger max_results"));
+        assert!(short.contains("Narrow the query"));
+    }
+
+    #[test]
+    fn negative_max_results_deserializes_and_clamps() {
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": -1 });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(-1));
+        assert_eq!(resolve_max_results(param.max_results), 1);
+    }
+
+    #[test]
+    fn float_and_string_max_results_coerce_or_reject() {
+        // Fractional floats truncate toward zero, then clamp.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": 2.5 });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(2));
+
+        // Numeric strings parse.
+        let json = serde_json::json!({ "query": "MyStruct", "max_results": "200" });
+        let param: WorkspaceSymbolParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(200));
+
+        // Anything else is an invalid-params deserialization error.
+        for bad in [
+            serde_json::json!({ "query": "MyStruct", "max_results": true }),
+            serde_json::json!({ "query": "MyStruct", "max_results": "many" }),
+            serde_json::json!({ "query": "MyStruct", "max_results": [10] }),
+        ] {
+            assert!(
+                serde_json::from_value::<WorkspaceSymbolParam>(bad).is_err(),
+                "non-numeric max_results must fail deserialization"
+            );
+        }
+    }
+
+    #[test]
+    fn references_param_deserializes_with_optional_max_results() {
+        let json = serde_json::json!({
+            "file_path": "/abs/file.rs", "line": 3, "character": 7
+        });
+        let param: ReferencesParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.line, 3);
+        assert_eq!(param.character, 7);
+        assert_eq!(param.max_results, None, "max_results is optional");
+
+        let json = serde_json::json!({
+            "file_path": "/abs/file.rs", "line": 0, "character": 0, "max_results": 5
+        });
+        let param: ReferencesParam = serde_json::from_value(json).unwrap();
+        assert_eq!(param.max_results, Some(5));
     }
 
     #[test]
