@@ -1,3 +1,7 @@
+---
+title: "lspmux-cc: LSP Multiplexing for Claude Code"
+---
+
 # lspmux-cc: LSP Multiplexing for Claude Code
 
 **Date:** 2026-02-05
