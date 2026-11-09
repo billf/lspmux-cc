@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "lspmux-rust-analyzer": {
+      "type": "stdio",
+      "command": "./bin/lspmux-cc-mcp",
+      "env": {
+        "LSPMUX_BOOTSTRAP": "auto",
+        "LSPMUX_CLIENT_KIND": "pi_mcp",
+        "LSPMUX_CLIENT_HOST": "pi"
+      }
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp/oauth"
+    }
+  }
+}

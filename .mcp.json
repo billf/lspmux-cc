@@ -1,14 +1,18 @@
 {
   "mcpServers": {
     "lspmux-rust-analyzer": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/lspmux-cc-mcp",
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "if [ -n \"$CLAUDE_PLUGIN_ROOT\" ]; then export RUST_ANALYZER_PATH=\"$CLAUDE_PLUGIN_ROOT/bin/rust-analyzer\"; exec \"$CLAUDE_PLUGIN_ROOT/bin/lspmux-cc-mcp\"; else exec ./bin/lspmux-cc-mcp; fi"],
       "env": {
-        "RUST_ANALYZER_PATH": "${CLAUDE_PLUGIN_ROOT}/bin/rust-analyzer",
         "LSPMUX_BOOTSTRAP": "auto",
         "LSPMUX_CLIENT_KIND": "claude_mcp",
-        "LSPMUX_CLIENT_HOST": "claude",
-        "LSPMUX_CONFIG_PATH": "${LSPMUX_CONFIG_PATH}"
+        "LSPMUX_CLIENT_HOST": "claude"
       }
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp/oauth"
     }
   }
 }

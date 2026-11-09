@@ -8,6 +8,10 @@ set -euo pipefail
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+if [ -n "${RUST_ANALYZER_PATH:-}" ] && [ "${RUST_ANALYZER_PATH}" -ef "$0" ]; then
+    unset RUST_ANALYZER_PATH
+fi
+
 if [ -n "${RUST_ANALYZER_PATH:-}" ] && [ -x "${RUST_ANALYZER_PATH}" ]; then
     exec "${RUST_ANALYZER_PATH}" "$@"
 fi

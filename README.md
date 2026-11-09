@@ -2,6 +2,8 @@
 
 Share one `rust-analyzer` instance across editors, Claude Code, Codex, opencode, and other MCP-capable agents in the same Rust workspace. Built on [lspmux](https://codeberg.org/p2502/lspmux) by p2502.
 
+The [Docs7 site](https://billf-lspmux-cc.docs7.io/) is an optional source of project information; this README and the repository's host guides remain available locally.
+
 ## How It Works
 
 `lspmux` multiplexes multiple LSP client connections to one `rust-analyzer` process. `lspmux-cc` adds an MCP server that exposes rust-analyzer capabilities as agent-callable tools, plus a Claude Code plugin for transparent LSP routing.
@@ -88,6 +90,8 @@ All file paths must be absolute.
 ## Host and Editor Integrations
 
 Start with [docs/hosts/README.md](docs/hosts/README.md) for the comparison table.
+
+This checkout includes MCP configuration for Claude Code and OMP in `.mcp.json` and for Pi in `.pi/mcp.json`. Both configure the local Rust server and the hosted Context7 documentation server. Install the MCP binary as described above, trust the project when prompted, and sign in to Context7 through the host's MCP interface. In OMP, run `/mcp reload` followed by `/mcp reauth context7`; in Pi, run `/mcp login context7`.
 
 | Guide | Use this when |
 |-------|---------------|

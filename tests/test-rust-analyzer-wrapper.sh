@@ -53,6 +53,13 @@ else
     fail "expected PATH rust-analyzer to be used, got ${path_output}"
 fi
 
+self_output="$(run_wrapper RUST_ANALYZER_PATH="${WRAPPER}" "${WRAPPER}" --version)"
+if [ "${self_output}" = "path:--version" ]; then
+    pass "self-referencing override falls back to PATH"
+else
+    fail "expected self-referencing override to fall back to PATH, got ${self_output}"
+fi
+
 echo "-- Legacy result symlink --"
 mkdir -p "${SCRIPT_DIR}/result-rust-analyzer-nightly/bin"
 cat > "${SCRIPT_DIR}/result-rust-analyzer-nightly/bin/rust-analyzer" <<'EOF'
