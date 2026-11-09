@@ -1,0 +1,15 @@
+{
+  "$schema": "https://context7.com/schema/docs7.json",
+  "name": "lspmux-cc",
+  "colors": {
+    "primary": "#16A34A"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Guide",
+        "pages": ["index"]
+      }
+    ]
+  }
+}

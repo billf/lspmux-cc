@@ -1,0 +1,24 @@
+---
+title: Introduction
+description: Share rust-analyzer across editors and coding agents
+---
+
+`lspmux-cc` shares one `rust-analyzer` instance across editors and MCP-capable agents in the same Rust workspace. It combines [lspmux](https://codeberg.org/p2502/lspmux) with an MCP server and a Claude Code plugin.
+
+## Installation
+
+The manual installation requires macOS or Linux, a Rust toolchain, `jq`, and `rust-analyzer`. Install the MCP server and configure lspmux from a checkout:
+
+```sh
+cargo install --path mcp-server
+./setup core
+./setup doctor
+```
+
+Alternatively, use `nix build` to build the MCP server or `nix build .#plugin` to build the Claude Code plugin.
+
+## MCP tools
+
+The server exposes read-only Rust tools including diagnostics, hover, definitions, references, symbols, code actions, and rename. Code actions and rename return edits without applying them. Position inputs are zero-based; returned locations are one-based. File paths must be absolute.
+
+For configuration, host integration guides, and the full tool list, see the [repository README](https://github.com/billf/lspmux-cc#readme).
