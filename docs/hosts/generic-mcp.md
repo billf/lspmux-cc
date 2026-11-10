@@ -1,3 +1,7 @@
+---
+title: Generic MCP Integration
+---
+
 # Generic MCP Integration
 
 Any MCP-capable host can run `lspmux-cc-mcp` over stdio. This is an MCP-only integration; it does not configure editor LSP.

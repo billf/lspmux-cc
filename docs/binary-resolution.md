@@ -1,3 +1,7 @@
+---
+title: Binary resolution contracts
+---
+
 # Binary resolution contracts
 
 `lspmux-cc` deliberately resolves external binaries instead of downloading or

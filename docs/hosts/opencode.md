@@ -1,3 +1,7 @@
+---
+title: opencode Integration
+---
+
 # opencode Integration
 
 [opencode](https://opencode.ai) uses `lspmux-cc` through MCP, and optionally through an

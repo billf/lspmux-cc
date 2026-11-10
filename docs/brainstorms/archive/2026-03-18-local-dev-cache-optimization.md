@@ -1,3 +1,7 @@
+---
+title: Local development cache optimization
+---
+
 # Local development cache optimization
 
 **Date:** 2026-03-18

@@ -1,3 +1,7 @@
+---
+title: Claude Code Integration
+---
+
 # Claude Code Integration
 
 Claude Code uses `lspmux-cc` through both LSP and MCP:
