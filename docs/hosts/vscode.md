@@ -1,3 +1,7 @@
+---
+title: VS Code Integration
+---
+
 # VS Code Integration
 
 VS Code uses the rust-analyzer extension as an LSP client. This guide routes that extension through `lspmux client`. It does not provide MCP tools; use an MCP host guide separately for agent-callable tools.

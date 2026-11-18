@@ -1,4 +1,5 @@
 ---
+title: "fix: Match the cold-start workspace correctly"
 status: completed
 type: fix
 origin: "https://github.com/billf/lspmux-cc/issues/1"
