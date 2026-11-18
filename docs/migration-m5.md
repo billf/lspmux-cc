@@ -1,3 +1,7 @@
+---
+title: Migrating to the on-demand spawn model (M5)
+---
+
 # Migrating to the on-demand spawn model (M5)
 
 Before M5, `./setup core` installed a launchd plist (macOS) or systemd user unit (Linux) that auto-started `lspmux server` at login. The MCP server assumed the daemon was already running.

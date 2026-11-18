@@ -1,3 +1,7 @@
+---
+title: "Residual review findings — feat/expand-lsp-tool-surface (REV-010)"
+---
+
 # Residual Review Findings — feat/expand-lsp-tool-surface (REV-010)
 
 Source: ce-code-review run `20260601-0ce547df` (autofix), 7 personas + Codex, on

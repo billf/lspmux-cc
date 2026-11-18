@@ -1,3 +1,7 @@
+---
+title: Vim/vim-lsp Integration
+---
+
 # Vim/vim-lsp Integration
 
 `prabirshrestha/vim-lsp` is an LSP integration for Vim 8 and Neovim. It does not provide MCP tools.

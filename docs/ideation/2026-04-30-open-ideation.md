@@ -1,4 +1,5 @@
 ---
+title: "Ideation: lspmux-cc — Surprise-Me Pass"
 date: 2026-04-30
 topic: lspmux-cc-open-ideation
 focus: surprise-me (no user-specified subject)
