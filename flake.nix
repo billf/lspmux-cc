@@ -152,6 +152,18 @@
                 inherit cargoArtifacts;
               }
             );
+            # The rust-toolchain.toml pin must track the flake's nixpkgs rustc:
+            # the just/doctor guard enforces the pin outside Nix, so drift
+            # silently reintroduces the proc-macro version skew the pin exists
+            # to prevent.
+            toolchain-pin = pkgs.runCommand "check-toolchain-pin" { } ''
+              pin="$(bash ${./scripts/toolchain-pin.sh} ${./rust-toolchain.toml})"
+              if [ "''${pin}" != "${pkgs.rustc.version}" ]; then
+                echo "rust-toolchain.toml pin (''${pin}) != flake nixpkgs rustc (${pkgs.rustc.version})" >&2
+                exit 1
+              fi
+              touch $out
+            '';
             plugin-structure = pkgs.runCommand "check-plugin-structure" { } ''
               test -f ${self'.packages.plugin}/.claude-plugin/plugin.json
               test -f ${self'.packages.plugin}/.mcp.json

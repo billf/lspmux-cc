@@ -364,6 +364,46 @@ cmd_doctor() {
         failures=$((failures + 1))
     fi
 
+    # Single-toolchain contract (see rust-toolchain.toml and
+    # docs/binary-resolution.md): ambient cargo must resolve to the pin so
+    # rust-analyzer's own cargo check reuses target/ artifacts instead of
+    # rebuilding them with a different rustc (which breaks proc-macro
+    # expansion). The guard also detects stale nix develop shells.
+    if [ ! -x "${SCRIPT_DIR}/scripts/assert-toolchain.sh" ]; then
+        echo "  [!!] toolchain: guard script missing (expected ${SCRIPT_DIR}/scripts/assert-toolchain.sh)"
+        failures=$((failures + 1))
+    elif guard_out="$("${SCRIPT_DIR}/scripts/assert-toolchain.sh" 2>&1)"; then
+        echo "  [ok] toolchain: ${guard_out}"
+    else
+        # Surface the guard's own first line, then hint by cause: a single
+        # generic message misdirects (e.g. prescribing a toolchain install
+        # when rustup itself is missing).
+        echo "  [!!] toolchain: $(printf '%s\n' "${guard_out}" | head -n 1)"
+        case "${guard_out}" in
+            *"stale nix develop"*)
+                echo "       exit this shell and re-enter nix develop"
+                ;;
+            *"rustup not found"*)
+                echo "       install rustup or enter nix develop"
+                ;;
+            *"not installed"*)
+                printf '%s\n' "${guard_out}" | sed -n 's/^Run: /       /p'
+                echo "       or enter nix develop"
+                ;;
+            *"cargo/rustc not found"*)
+                echo "       add a Rust toolchain to PATH or enter nix develop"
+                ;;
+            *"no channel found"*)
+                echo "       repair rust-toolchain.toml or re-clone the repo"
+                ;;
+            *)
+                echo "       run ./scripts/assert-toolchain.sh for details, then fix with one of:"
+                echo "       rustup toolchain install <pin> with shims first on PATH, or nix develop"
+                ;;
+        esac
+        failures=$((failures + 1))
+    fi
+
     if [ -f "${LSPMUX_CONFIG_PATH}" ]; then
         echo "  [ok] config file: present"
     else

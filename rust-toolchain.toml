@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned to the flake's locked nixpkgs rustc (see `nix develop`, crane builds).
+# rust-analyzer resolves its build toolchain from its own environment, so the
+# interactive toolchain must match it: same rustc version means rust-analyzer
+# reuses (instead of rebuilding) target/ artifacts, and its proc-macro server
+# pick stays ABI-compatible with the compiled dylibs. When the flake's
+# nixpkgs rev bumps rustc, bump this pin to match (see docs/binary-resolution.md).
+# CI is unaffected: it invokes `cargo +stable` explicitly.
+channel = "1.98.1"

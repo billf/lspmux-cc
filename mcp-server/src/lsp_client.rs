@@ -427,10 +427,9 @@ impl LspClient {
                 return Ok(());
             }
             // Content changed — send didChange with updated content.
-            *version += 1;
-            *prev_hash = content_hash;
-            let v = *version;
-            drop(opened);
+            let v = *version + 1;
+            // Keep synchronization serialized and commit only after a successful
+            // write. Failed notifications must remain eligible for retry.
 
             self.notify(
                 "textDocument/didChange",
@@ -443,11 +442,11 @@ impl LspClient {
                     }],
                 },
             )
-            .await
+            .await?;
+            *version = v;
+            *prev_hash = content_hash;
         } else {
             // First access — send didOpen.
-            opened.insert(file_path.to_string(), (0, content_hash));
-            drop(opened);
 
             self.notify(
                 "textDocument/didOpen",
@@ -460,8 +459,11 @@ impl LspClient {
                     },
                 },
             )
-            .await
+            .await?;
+            opened.insert(file_path.to_string(), (0, content_hash));
         }
+        drop(opened);
+        Ok(())
     }
 
     /// Whether the LSP child process is still alive.
@@ -905,24 +907,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::significant_drop_tightening)]
     async fn has_opened_files_reflects_open_state() {
-        let mut child = Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take().unwrap();
-
-        let client = LspClient {
-            child_stdin: Arc::new(Mutex::new(stdin)),
-            next_id: AtomicI64::new(1),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            opened_files: Mutex::new(HashMap::new()),
-            child: Arc::new(Mutex::new(child)),
-            alive: Arc::new(AtomicBool::new(false)),
-            workspace_root: tokio::sync::Mutex::new(None),
-            server_version: tokio::sync::Mutex::new(None),
-            readiness: Arc::new(tokio::sync::Mutex::new(ReadinessState::default())),
-        };
+        let client = cat_fixture_client(false);
 
         // Fresh client: nothing opened, so the daemon hasn't been engaged.
         assert!(!client.has_opened_files().await);
@@ -935,10 +920,184 @@ mod tests {
             .insert("/tmp/foo.rs".to_string(), (0, 0));
         assert!(client.has_opened_files().await);
 
+        kill_fixture_client(&client).await;
+    }
+
+    /// Spawn a `cat` fixture process and wrap it in an `LspClient` whose
+    /// notifications succeed without a real language server. Tests kill the
+    /// child when done via `kill_fixture_client`.
+    fn cat_fixture_client(alive: bool) -> LspClient {
+        let mut child = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        LspClient {
+            child_stdin: Arc::new(Mutex::new(stdin)),
+            next_id: AtomicI64::new(1),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            opened_files: Mutex::new(HashMap::new()),
+            child: Arc::new(Mutex::new(child)),
+            alive: Arc::new(AtomicBool::new(alive)),
+            workspace_root: tokio::sync::Mutex::new(None),
+            server_version: tokio::sync::Mutex::new(None),
+            readiness: Arc::new(tokio::sync::Mutex::new(ReadinessState::default())),
+        }
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    async fn kill_fixture_client(client: &LspClient) {
+        let mut child = client.child.lock().await;
+        let _ = child.kill().await;
+    }
+
+    /// The MCP tool path re-syncs current on-disk content on every call:
+    /// `ensure_file_open` sends `didOpen` first, then `didChange` whenever the
+    /// file changed on disk, and skips the notification when it has not. This is
+    /// what keeps diagnostics fresh for every runtime without the Claude-only
+    /// `PostToolUse` hook, which never fires for Codex or `OpenCode`.
+    #[tokio::test]
+    async fn ensure_file_open_resyncs_on_disk_change() {
+        // `cat` accepts the notifications on stdin so notify() succeeds without a
+        // real language server.
+        let client = cat_fixture_client(true);
+
+        let file = tempfile::Builder::new()
+            .prefix("lspmux_ensure_open_")
+            .suffix(".rs")
+            .tempfile()
+            .unwrap();
+        let path_str = file.path().to_str().unwrap().to_string();
+        let path = std::path::PathBuf::from(&path_str);
+
+        // First call: didOpen, version 0.
+        std::fs::write(&path, "fn a() {}\n").unwrap();
+        client.ensure_file_open(&path_str).await.unwrap();
+        assert_eq!(
+            client
+                .opened_files
+                .lock()
+                .await
+                .get(&path_str)
+                .map(|(version, _)| *version),
+            Some(0),
+            "first open records version 0"
+        );
+
+        // Disk content changes: the next call must re-sync (didChange, version 1).
+        std::fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
+        client.ensure_file_open(&path_str).await.unwrap();
+        assert_eq!(
+            client
+                .opened_files
+                .lock()
+                .await
+                .get(&path_str)
+                .map(|(version, _)| *version),
+            Some(1),
+            "changed disk content re-syncs and bumps the version"
+        );
+
+        // Unchanged content: no notification, version stays at 1.
+        client.ensure_file_open(&path_str).await.unwrap();
+        assert_eq!(
+            client
+                .opened_files
+                .lock()
+                .await
+                .get(&path_str)
+                .map(|(version, _)| *version),
+            Some(1),
+            "unchanged content skips didChange"
+        );
+
+        kill_fixture_client(&client).await;
+    }
+
+    #[tokio::test]
+    async fn ensure_file_open_missing_file_returns_path_error() {
+        let client = cat_fixture_client(true);
+
+        // Join the missing name inside a fresh tempdir so absence is
+        // structural: a leftover file at a fixed shared path would flip
+        // expect_err into a panic.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("lspmux_ensure_open_missing.rs");
+        let missing_str = missing.to_str().unwrap();
+        let err = client
+            .ensure_file_open(missing_str)
+            .await
+            .expect_err("opening a nonexistent file must fail");
+        assert!(
+            err.to_string().contains(missing_str),
+            "read error names the path, got: {err}"
+        );
+        assert!(
+            client.opened_files.lock().await.get(missing_str).is_none(),
+            "a failed read records no opened_files entry"
+        );
+
+        kill_fixture_client(&client).await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::significant_drop_tightening)]
+    async fn ensure_file_open_dead_stdin_returns_err() {
+        // Spawn the fixture, then reap it before opening anything: with no
+        // reader left on the pipe, the didOpen notify fails loudly instead of
+        // hanging or reporting success.
+        let client = cat_fixture_client(true);
         {
             let mut child = client.child.lock().await;
             let _ = child.kill().await;
+            let _ = child.wait().await;
         }
+
+        let file = tempfile::Builder::new()
+            .prefix("lspmux_ensure_open_")
+            .suffix(".rs")
+            .tempfile()
+            .unwrap();
+        let path_str = file.path().to_str().unwrap().to_string();
+        std::fs::write(file.path(), "fn a() {}\n").unwrap();
+        let err = client
+            .ensure_file_open(&path_str)
+            .await
+            .expect_err("notify on a dead stdin must fail loudly");
+        assert!(
+            err.to_string().contains("didOpen")
+                || err.to_string().contains("Broken pipe")
+                || err.to_string().contains("closed"),
+            "notify failure surfaces the sync error, got: {err}"
+        );
+
+        kill_fixture_client(&client).await;
+    }
+
+    #[tokio::test]
+    async fn failed_file_notifications_preserve_retry_state() {
+        let client = cat_fixture_client(true);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        std::fs::write(file.path(), "fn a() {}\n").unwrap();
+        client.alive.store(false, Ordering::Release);
+        assert!(client.ensure_file_open(path).await.is_err());
+        assert!(!client.opened_files.lock().await.contains_key(path));
+        client.alive.store(true, Ordering::Release);
+        client.ensure_file_open(path).await.unwrap();
+        let original = client.opened_files.lock().await[path];
+        std::fs::write(file.path(), "fn b() {}\n").unwrap();
+        client.alive.store(false, Ordering::Release);
+        for _ in 0..2 {
+            assert!(client.ensure_file_open(path).await.is_err());
+            assert_eq!(client.opened_files.lock().await[path], original);
+        }
+        client.alive.store(true, Ordering::Release);
+        client.ensure_file_open(path).await.unwrap();
+        assert_eq!(client.opened_files.lock().await[path].0, original.0 + 1);
+        assert_ne!(client.opened_files.lock().await[path].1, original.1);
+        kill_fixture_client(&client).await;
     }
 
     #[tokio::test]
