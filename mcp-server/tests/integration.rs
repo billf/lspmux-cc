@@ -222,14 +222,8 @@ async fn two_clients_share_single_rust_analyzer() {
         .await
         .expect("Client B: hover failed");
 
-    let hover_text_a = hover_a
-        .as_ref()
-        .map(|h| format!("{h:?}"))
-        .unwrap_or_default();
-    let hover_text_b = hover_b
-        .as_ref()
-        .map(|h| format!("{h:?}"))
-        .unwrap_or_default();
+    let hover_text_a = hover_a.as_ref().map_or_default(|h| format!("{h:?}"));
+    let hover_text_b = hover_b.as_ref().map_or_default(|h| format!("{h:?}"));
 
     assert!(
         hover_text_a.contains("LspClient"),

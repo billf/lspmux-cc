@@ -422,6 +422,8 @@ pub struct MacroExpansionResponse {
 
 /// rust-analyzer's non-standard `rust-analyzer/expandMacro` request. Not part of
 /// the LSP spec, so it isn't in `lsp_types::request`; we declare it here.
+/// Marker type only, never instantiated (uninhabited enum per `lsp_types` convention).
+#[allow(clippy::empty_enums)]
 enum ExpandMacro {}
 
 impl lsp_types::request::Request for ExpandMacro {
