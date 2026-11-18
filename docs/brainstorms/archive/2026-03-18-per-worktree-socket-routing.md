@@ -1,3 +1,7 @@
+---
+title: Per-worktree socket routing for multi-workspace scenarios
+---
+
 # Per-worktree socket routing for multi-workspace scenarios
 
 **Date:** 2026-03-18

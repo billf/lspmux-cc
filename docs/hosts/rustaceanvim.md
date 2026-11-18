@@ -1,3 +1,7 @@
+---
+title: rustaceanvim Integration
+---
+
 # rustaceanvim Integration
 
 rustaceanvim is an LSP integration. It does not provide MCP tools; use [Codex](codex.md), [Claude Code](claude-code.md), or [Generic MCP](generic-mcp.md) alongside it if you want agent-callable tools.

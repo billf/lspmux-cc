@@ -9,6 +9,32 @@
       {
         "group": "Guide",
         "pages": ["index"]
+      },
+      {
+        "group": "Reference",
+        "pages": ["binary-resolution", "migration-m5"]
+      },
+      {
+        "group": "Hosts",
+        "pages": [
+          "hosts/README",
+          "hosts/claude-code",
+          "hosts/codex",
+          "hosts/generic-mcp",
+          "hosts/neovim",
+          "hosts/opencode",
+          "hosts/rustaceanvim",
+          "hosts/vim-lsp",
+          "hosts/vscode"
+        ]
+      },
+      {
+        "group": "Brainstorms",
+        "pages": [
+          "brainstorms/README",
+          "brainstorms/2026-03-18-observability-and-reuse-roadmap",
+          "brainstorms/2026-05-04-mcp-server-workspace-split-requirements"
+        ]
       }
     ]
   }

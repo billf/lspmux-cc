@@ -1,4 +1,5 @@
 ---
+title: MCP server testability boundary
 date: 2026-05-04
 topic: mcp-server-testability
 status: narrowed
@@ -72,9 +73,9 @@ should be updated to this boundary.
 
 ## References
 
-- [`mcp-server/src/lib.rs`](../../mcp-server/src/lib.rs) — current library
+- [`mcp-server/src/lib.rs`](../../../mcp-server/src/lib.rs) — current library
   boundary
-- [`mcp-server/tests/integration.rs`](../../mcp-server/tests/integration.rs) —
+- [`mcp-server/tests/integration.rs`](../../../mcp-server/tests/integration.rs) —
   existing external library consumer
 - ARCH-1 and ARCH-3 historical review records (the retired tracker tree is not
   part of this repository)

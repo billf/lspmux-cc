@@ -1,3 +1,7 @@
+---
+title: Neovim LSP Integration
+---
+
 # Neovim LSP Integration
 
 Neovim is an LSP integration. It does not provide MCP tools; pair it with an MCP host guide if you also want agent-callable rust-analyzer tools.

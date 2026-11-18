@@ -1,3 +1,7 @@
+---
+title: Observability and artifact-reuse roadmap
+---
+
 # Observability and artifact-reuse roadmap
 
 **Date:** 2026-03-18

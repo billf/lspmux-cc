@@ -1,3 +1,7 @@
+---
+title: Codex Integration
+---
+
 # Codex Integration
 
 Codex uses `lspmux-cc` as a plain MCP server. It does not use the LSP plugin path; editors can keep using their own LSP clients as long as they point at the same `lspmux server`.
